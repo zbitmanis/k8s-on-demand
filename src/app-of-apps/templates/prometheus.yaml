@@ -1,0 +1,35 @@
+{{- if .Values.spec.gitops.applications.prometheus.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.prometheus.namespace | default "monitoring" }}
+  project: {{ .Values.spec.gitops.applications.prometheus.project | default "default" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.prometheus.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.prometheus.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.prometheus.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+{{- if .Values.spec.gitops.applications.prometheus.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}

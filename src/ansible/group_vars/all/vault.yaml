@@ -1,0 +1,8 @@
+# This file is encrypted with Ansible Vault.
+# Edit with: ansible-vault edit group_vars/all/vault.yaml
+# Encrypt with: ansible-vault encrypt group_vars/all/vault.yaml
+#
+# Expected keys (do not commit unencrypted):
+#
+# vault_ecr_pull_secret: |
+#   {"auths":{"<account>.dkr.ecr.<region>.amazonaws.com":{"auth":"<base64>"}}}

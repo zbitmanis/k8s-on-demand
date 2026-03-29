@@ -1,0 +1,90 @@
+variable "region" {
+  type        = string
+  description = "AWS region for the cluster"
+  default     = "eu-west-1"
+}
+
+variable "environment" {
+  type        = string
+  description = "Deployment environment label"
+  default     = "staging"
+
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment must be staging or production"
+  }
+}
+
+variable "cluster_name" {
+  type        = string
+  description = "EKS cluster name"
+  default     = "platform-dev"
+}
+
+variable "kubernetes_version" {
+  type        = string
+  description = "Kubernetes version for the EKS cluster"
+  default     = "1.29"
+}
+
+variable "vpc_cidr" {
+  type        = string
+  description = "CIDR block for the VPC"
+  default     = "10.0.0.0/16"
+}
+
+variable "availability_zones" {
+  type        = list(string)
+  description = "List of AZs to use (must be 3)"
+  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+
+  validation {
+    condition     = length(var.availability_zones) == 3
+    error_message = "Exactly 3 availability zones are required"
+  }
+}
+
+variable "tenant_ids" {
+  type        = list(string)
+  description = "List of tenant IDs for which to pre-create IAM roles"
+  default     = ["example-tenant"]
+}
+
+variable "state_bucket" {
+  type        = string
+  description = "S3 bucket name for Terraform state (passed via -backend-config in GHA)"
+  default     = ""
+}
+
+variable "lock_table" {
+  type        = string
+  description = "DynamoDB table name for state locking (passed via -backend-config in GHA)"
+  default     = ""
+}
+
+variable "cluster_endpoint_public_access" {
+  type        = bool
+  description = "Enable public EKS API endpoint (true for dev/staging, false for production)"
+  default     = true
+}
+
+variable "github_org" {
+  type        = string
+  description = "GitHub organisation name for OIDC trust policy"
+}
+
+variable "github_repo" {
+  type        = string
+  description = "GitHub repository name for OIDC trust policy"
+  default     = "k8s-on-demand"
+}
+
+variable "metrics_bucket_name" {
+  type        = string
+  description = "S3 bucket for Thanos long-term metric storage"
+}
+
+variable "artifacts_bucket_name" {
+  type        = string
+  description = "S3 bucket for Argo Workflow artifacts"
+}

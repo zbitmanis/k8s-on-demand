@@ -1,0 +1,57 @@
+spec:
+  destination:
+    server: https://kubernetes.default.svc  # Single shared cluster
+
+  default:
+    repoURL: https://github.com/<org>/k8s-on-demand.git
+    helm:
+      valueFiles:
+        - values.yaml
+
+  source:
+    targetRevision: HEAD
+
+  gitops:
+    applications:
+
+      externalSecretsOperator:
+        appPath: src/applications/external-secrets-operator
+        namespace: external-secrets
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      prometheus:
+        appPath: src/applications/prometheus
+        namespace: monitoring
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      thanosSidecar:
+        appPath: src/applications/thanos-sidecar
+        namespace: monitoring
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      ingressNginx:
+        appPath: src/applications/ingress-nginx
+        namespace: ingress-nginx
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      awsLoadBalancerController:
+        appPath: src/applications/aws-load-balancer-controller
+        namespace: aws
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      certManager:
+        appPath: src/applications/cert-manager
+        namespace: cert-manager
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      gatekeeper:
+        appPath: src/applications/gatekeeper
+        namespace: gatekeeper-system
+        isEnabled: true
+        isEnabledAutoSync: true

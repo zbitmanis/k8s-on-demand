@@ -1,0 +1,290 @@
+---
+# Tenant lifecycle WorkflowTemplates: onboard and offboard
+# Submitted by Argo Events sensors or manually via `argo submit`
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tenant-onboard
+  namespace: argo
+spec:
+  entrypoint: onboard
+  serviceAccountName: argo-workflow-runner
+
+  retryStrategy:
+    limit: "2"
+    retryPolicy: OnFailure
+    backoff:
+      duration: 30s
+      factor: "2"
+      maxDuration: 5m
+
+  arguments:
+    parameters:
+      - name: tenant_id
+
+  templates:
+    # ── Entrypoint ────────────────────────────────────────────────────────────
+    - name: onboard
+      inputs:
+        parameters:
+          - name: tenant_id
+      steps:
+        - - name: validate-config
+            template: run-script
+            arguments:
+              parameters:
+                - name: script
+                  value: "validate_tenant_config.py --tenant-id {{inputs.parameters.tenant_id}} --in-cluster"
+
+        - - name: provision-namespace
+            template: run-script
+            arguments:
+              parameters:
+                - name: script
+                  value: "provision_namespace.py --tenant-id {{inputs.parameters.tenant_id}} --in-cluster"
+
+        - - name: wait-for-argocd-sync
+            template: poll-argocd-health
+            arguments:
+              parameters:
+                - name: app_name
+                  value: "{{inputs.parameters.tenant_id}}"
+
+        - - name: notify
+            template: run-script
+            arguments:
+              parameters:
+                - name: script
+                  value: "notify_tenant.py --tenant-id {{inputs.parameters.tenant_id}} --event onboard-complete"
+            onExit: notify-failure  # Post failure notification if this step is skipped on error
+
+    # ── Failure notification (called via onExit hook) ─────────────────────────
+    - name: notify-failure
+      inputs:
+        parameters:
+          - name: tenant_id
+            value: "{{workflow.parameters.tenant_id}}"
+      steps:
+        - - name: post-failure
+            template: run-script
+            when: "{{workflow.status}} != Succeeded"
+            arguments:
+              parameters:
+                - name: script
+                  value: "notify_tenant.py --tenant-id {{inputs.parameters.tenant_id}} --event onboard-failed"
+
+    # ── Shared: run a Python script from the platform-scripts image ───────────
+    - name: run-script
+      inputs:
+        parameters:
+          - name: script
+      container:
+        image: "{{workflow.parameters.scripts_image}}"
+        command: [python]
+        args: ["{{inputs.parameters.script}}"]
+        env:
+          - name: SLACK_WEBHOOK_URL
+            valueFrom:
+              secretKeyRef:
+                name: platform-slack
+                key: webhook-url
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+    # ── Shared: poll ArgoCD until app is Healthy+Synced ───────────────────────
+    - name: poll-argocd-health
+      inputs:
+        parameters:
+          - name: app_name
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          APP="{{inputs.parameters.app_name}}"
+          TIMEOUT=600   # 10 minutes
+          ELAPSED=0
+
+          # Port-forward ArgoCD server
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          PF_PID=$!
+          sleep 5
+
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+
+          argocd login localhost:8080 \
+            --username admin \
+            --password "$ARGOCD_PASS" \
+            --insecure
+
+          while true; do
+            HEALTH=$(argocd app get "$APP" --output json 2>/dev/null \
+              | jq -r '.status.health.status // "Unknown"')
+            SYNC=$(argocd app get "$APP" --output json 2>/dev/null \
+              | jq -r '.status.sync.status // "Unknown"')
+
+            echo "  $APP: health=$HEALTH sync=$SYNC (${ELAPSED}s elapsed)"
+
+            if [[ "$HEALTH" == "Healthy" && "$SYNC" == "Synced" ]]; then
+              echo "Application $APP is Healthy and Synced."
+              kill $PF_PID 2>/dev/null || true
+              exit 0
+            fi
+
+            if (( ELAPSED >= TIMEOUT )); then
+              echo "Timeout waiting for $APP to become healthy."
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            sleep 20
+            ELAPSED=$(( ELAPSED + 20 ))
+          done
+
+  # Scripts image URI — override at submit time or via ApplicationSet parameter
+  # Example: argo submit --from workflowtemplate/tenant-onboard \
+  #            -p tenant_id=acme -p scripts_image=123456789.dkr.ecr.eu-west-1.amazonaws.com/platform-scripts:latest
+  # Falls back to local build tag for development use.
+  # NOTE: set this parameter when submitting in production.
+  arguments:
+    parameters:
+      - name: tenant_id
+      - name: scripts_image
+        value: "platform-scripts:latest"
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tenant-offboard
+  namespace: argo
+spec:
+  entrypoint: offboard
+  serviceAccountName: argo-workflow-runner
+
+  arguments:
+    parameters:
+      - name: tenant_id
+
+  templates:
+    # ── Entrypoint ────────────────────────────────────────────────────────────
+    - name: offboard
+      inputs:
+        parameters:
+          - name: tenant_id
+      steps:
+        # Manual approval gate — workflow suspends until platform team resumes it
+        - - name: confirm-offboard
+            template: approval-gate
+
+        - - name: drain-workloads
+            template: delete-argocd-app
+            arguments:
+              parameters:
+                - name: app_name
+                  value: "{{inputs.parameters.tenant_id}}"
+
+        - - name: delete-argocd-project
+            template: delete-argocd-project
+            arguments:
+              parameters:
+                - name: project_name
+                  value: "{{inputs.parameters.tenant_id}}"
+
+        - - name: delete-namespace
+            template: delete-namespace
+            arguments:
+              parameters:
+                - name: namespace
+                  value: "{{inputs.parameters.tenant_id}}"
+
+        - - name: notify
+            template: run-script
+            arguments:
+              parameters:
+                - name: script
+                  value: "notify_tenant.py --tenant-id {{inputs.parameters.tenant_id}} --event offboard-complete"
+
+    # ── Manual approval gate ──────────────────────────────────────────────────
+    - name: approval-gate
+      suspend:
+        duration: "0"   # Suspends indefinitely until `argo resume` is called
+
+    # ── Delete ArgoCD Application ─────────────────────────────────────────────
+    - name: delete-argocd-app
+      inputs:
+        parameters:
+          - name: app_name
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          APP="{{inputs.parameters.app_name}}"
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          PF_PID=$!
+          sleep 5
+
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+          argocd login localhost:8080 --username admin --password "$ARGOCD_PASS" --insecure
+
+          argocd app delete "$APP" --cascade --yes 2>/dev/null || true
+          echo "Deleted ArgoCD Application/$APP"
+          kill $PF_PID 2>/dev/null || true
+
+    # ── Delete ArgoCD AppProject ──────────────────────────────────────────────
+    - name: delete-argocd-project
+      inputs:
+        parameters:
+          - name: project_name
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          kubectl delete appproject "{{inputs.parameters.project_name}}" \
+            -n argocd --ignore-not-found
+          echo "Deleted AppProject/{{inputs.parameters.project_name}}"
+
+    # ── Delete tenant namespace ───────────────────────────────────────────────
+    - name: delete-namespace
+      inputs:
+        parameters:
+          - name: namespace
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          kubectl delete namespace "{{inputs.parameters.namespace}}" --ignore-not-found
+          echo "Deleted Namespace/{{inputs.parameters.namespace}}"
+
+    # ── Shared: run a Python script ───────────────────────────────────────────
+    - name: run-script
+      inputs:
+        parameters:
+          - name: script
+      container:
+        image: "{{workflow.parameters.scripts_image}}"
+        command: [python]
+        args: ["{{inputs.parameters.script}}"]
+        env:
+          - name: SLACK_WEBHOOK_URL
+            valueFrom:
+              secretKeyRef:
+                name: platform-slack
+                key: webhook-url
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+  arguments:
+    parameters:
+      - name: tenant_id
+      - name: scripts_image
+        value: "platform-scripts:latest"

@@ -1,0 +1,21 @@
+---
+- name: Apply node labels
+  kubernetes.core.k8s:
+    kind: Node
+    name: "{{ ansible_hostname }}"
+    definition:
+      metadata:
+        labels: "{{ node_labels }}"
+    merge_type: merge
+  delegate_to: localhost
+
+- name: Apply node taints
+  kubernetes.core.k8s_taint:
+    state: present
+    name: "{{ ansible_hostname }}"
+    taints:
+      - effect: NoSchedule
+        key: node-role
+        value: "{{ node_role }}"
+  delegate_to: localhost
+  when: node_taint | length > 0

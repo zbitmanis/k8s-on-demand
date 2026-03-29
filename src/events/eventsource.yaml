@@ -1,0 +1,40 @@
+---
+# Webhook EventSource — tenant lifecycle operations
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: webhook-source
+  namespace: argo-events
+spec:
+  service:
+    ports:
+      - port: 12000
+        targetPort: 12000
+
+  webhook:
+    onboard-tenant:
+      port: "12000"
+      endpoint: /onboard-tenant
+      method: POST
+
+    offboard-tenant:
+      port: "12000"
+      endpoint: /offboard-tenant
+      method: POST
+
+---
+# Calendar EventSource — scheduled platform operations
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: calendar-source
+  namespace: argo-events
+spec:
+  calendar:
+    daily-health-check:
+      schedule: "0 6 * * *"
+      timezone: "UTC"
+
+    monthly-secret-rotation:
+      schedule: "0 2 1 * *"
+      timezone: "UTC"

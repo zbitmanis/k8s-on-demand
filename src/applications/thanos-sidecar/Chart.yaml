@@ -1,0 +1,11 @@
+apiVersion: v2
+name: thanos-sidecar
+description: Thanos — long-term metrics storage (Store Gateway, Query, Compactor)
+type: application
+version: 0.1.0
+appVersion: "0.35.0"
+
+dependencies:
+  - name: thanos
+    version: "13.2.2"
+    repository: https://charts.bitnami.com/bitnami

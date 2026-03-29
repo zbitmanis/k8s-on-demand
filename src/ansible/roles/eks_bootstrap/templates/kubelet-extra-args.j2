@@ -1,0 +1,2 @@
+# {{ ansible_managed }}
+KUBELET_EXTRA_ARGS="--node-labels=node-role={{ node_role }},tenant-id={{ tenant_id }}{% if node_taint %} --register-with-taints={{ node_taint }}{% endif %}"

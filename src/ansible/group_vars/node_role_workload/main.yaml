@@ -1,0 +1,7 @@
+---
+# Variables for workload node group (node-role=workload)
+node_role: workload
+node_taint: ""       # No taint on workload nodes
+node_labels:
+  node-role: workload
+  platform/managed: "true"

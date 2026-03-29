@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+version = 2
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "{{ ecr_pause_image }}"
+
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+      runtime_type = "io.containerd.runc.v2"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+        SystemdCgroup = true
+
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."{{ ecr_registry }}"]
+        endpoint = ["https://{{ ecr_registry }}"]

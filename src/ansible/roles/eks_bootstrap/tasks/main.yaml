@@ -1,0 +1,27 @@
+---
+- name: Apply sysctl for Kubernetes networking
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ sysctl_kubernetes }}"
+
+- name: Load br_netfilter kernel module
+  community.general.modprobe:
+    name: br_netfilter
+    state: present
+    persistent: present
+
+- name: Ensure kubelet extra args file exists
+  ansible.builtin.template:
+    src: kubelet-extra-args.j2
+    dest: /etc/default/kubelet
+    mode: "0644"
+  notify: restart kubelet
+
+- name: Ensure kubelet is enabled
+  ansible.builtin.systemd_service:
+    name: kubelet
+    enabled: true

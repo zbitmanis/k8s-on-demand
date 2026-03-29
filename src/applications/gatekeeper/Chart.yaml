@@ -1,0 +1,11 @@
+apiVersion: v2
+name: gatekeeper
+description: OPA Gatekeeper — policy enforcement via admission webhooks
+type: application
+version: 0.1.0
+appVersion: "3.15.1"
+
+dependencies:
+  - name: gatekeeper
+    version: "3.15.1"
+    repository: https://open-policy-agent.github.io/gatekeeper/charts

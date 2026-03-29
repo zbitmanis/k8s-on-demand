@@ -1,0 +1,35 @@
+{{- if .Values.spec.gitops.applications.thanosSidecar.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: thanos-sidecar
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.thanosSidecar.namespace | default "monitoring" }}
+  project: {{ .Values.spec.gitops.applications.thanosSidecar.project | default "default" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.thanosSidecar.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.thanosSidecar.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.thanosSidecar.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+{{- if .Values.spec.gitops.applications.thanosSidecar.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}

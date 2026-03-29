@@ -1,0 +1,157 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  # Enforces conventional commit format on the PR title so semantic-release
+  # can determine the correct version bump on merge.
+  commit-lint:
+    name: Lint PR title (conventional commits)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017  # v5.5.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Allowed types — must match releaseRules in package.json
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            style
+            test
+            ci
+            chore
+          # Allowed scopes mirror the src/ subdirectory layout
+          scopes: |
+            terraform
+            ansible
+            app-of-apps
+            applications
+            workflows
+            events
+            scripts
+            agents
+            tenants
+            docs
+            deps
+            release
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The subject "{subject}" must start with a lowercase letter.
+            Example: feat(terraform): add vpc module
+
+  # Labels the PR with the expected version bump so reviewers can see
+  # the release impact before approving.
+  label-version-bump:
+    name: Label version bump
+    runs-on: ubuntu-latest
+    needs: commit-lint
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Determine bump type from PR title
+        id: bump
+        shell: bash
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if echo "$TITLE" | grep -qiE "^(feat|fix|perf|refactor|docs|style|test|ci|chore)(\(.+\))?!:" ; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif echo "$TITLE" | grep -qE "^feat(\(.+\))?:" ; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          elif echo "$TITLE" | grep -qE "^(fix|perf|refactor)(\(.+\))?:" ; then
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=none"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove stale version labels
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        with:
+          script: |
+            const staleLabels = ['release: major', 'release: minor', 'release: patch', 'release: none'];
+            for (const label of staleLabels) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: label
+                });
+              } catch (e) { /* label not present — ignore */ }
+            }
+
+      - name: Apply version bump label
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        with:
+          script: |
+            const bump  = '${{ steps.bump.outputs.type }}';
+            const label = `release: ${bump}`;
+            const colors = { major: 'b60205', minor: 'e4e669', patch: '0075ca', none: 'cfd3d7' };
+
+            // Ensure the label exists in the repo
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: colors[bump] || 'cfd3d7',
+                description: `This PR will trigger a ${bump} version bump on merge`
+              });
+            } catch (e) { /* already exists — ignore */ }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [label]
+            });
+
+      - name: Post version bump summary comment
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        with:
+          script: |
+            const bump  = '${{ steps.bump.outputs.type }}';
+            const title = '${{ github.event.pull_request.title }}';
+            const icons = { major: '🔴', minor: '🟡', patch: '🟢', none: '⚪' };
+            const icon  = icons[bump] || '⚪';
+
+            const body = bump === 'none'
+              ? `${icon} **No release** — this PR will not trigger a version bump (type: \`${title.split(':')[0]}\`).`
+              : `${icon} **Release impact: \`${bump}\`** — merging this PR will trigger a **${bump}** version bump via semantic-release.\n\nCommit type derived from PR title: \`${title}\``;
+
+            // Update existing bot comment if present, else create new
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Release impact')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }

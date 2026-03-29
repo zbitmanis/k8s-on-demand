@@ -1,0 +1,33 @@
+---
+- name: Prepare all nodes
+  hosts: all
+  become: true
+  roles:
+    - role_prepare_node       # common_roles — chrony, base packages, users, dirs
+    - os_hardening            # roles — CIS hardening
+  tags:
+    - prepare
+
+- name: Configure container runtime
+  hosts: all
+  become: true
+  roles:
+    - container_runtime       # roles — containerd config, registry mirrors
+  tags:
+    - runtime
+
+- name: Bootstrap EKS node
+  hosts: all
+  become: true
+  roles:
+    - eks_bootstrap           # roles — kubelet flags, label/taint pre-registration
+  tags:
+    - eks
+
+- name: Reconcile node labels and taints
+  hosts: all
+  become: true
+  roles:
+    - node_labels             # roles — kubectl label/taint post-join reconciliation
+  tags:
+    - labels

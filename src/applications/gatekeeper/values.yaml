@@ -1,0 +1,46 @@
+gatekeeper:
+  # Run on system nodes
+  nodeSelector:
+    node-role: system
+
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: system
+      effect: NoSchedule
+
+  controllerManager:
+    replicaCount: 1
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+
+  audit:
+    replicaCount: 1
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+
+  # Enforce violations — warn mode for initial rollout
+  violations:
+    enforceAction: warn

@@ -1,0 +1,38 @@
+external-secrets:
+  replicaCount: 1
+
+  nodeSelector:
+    node-role: system
+
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: system
+      effect: NoSchedule
+
+  webhook:
+    replicaCount: 1
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+  certController:
+    replicaCount: 1
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

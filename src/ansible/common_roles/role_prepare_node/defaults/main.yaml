@@ -1,0 +1,16 @@
+---
+prepare_node_debian_packages:
+  - name: bash-completion
+  - name: ca-certificates
+  - name: curl
+  - name: chrony
+  - name: tmux
+  - name: vim
+  - name: unzip
+  - name: jq
+prepare_node_ntp_server: lv.pool.ntp.org
+prepare_node_config_chrony: true
+prepare_node_system_groups: []
+prepare_node_system_users: []
+prepare_node_system_folders: []
+prepare_node_hosts: []

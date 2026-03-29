@@ -1,0 +1,116 @@
+---
+# Sensor: tenant-onboard — webhook → submit tenant-onboard WorkflowTemplate
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: tenant-onboard-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: onboard-request
+      eventSourceName: webhook-source
+      eventName: onboard-tenant
+
+  triggers:
+    - template:
+        name: submit-onboard-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: tenant-onboard-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: tenant-onboard
+                arguments:
+                  parameters:
+                    - name: tenant_id
+                    - name: scripts_image
+                      value: "platform-scripts:latest"
+          parameters:
+            - src:
+                dependencyName: onboard-request
+                dataKey: body.tenant_id
+              dest: spec.arguments.parameters.0.value
+
+  # RBAC: sensor service account may only submit Workflows to argo namespace
+  template:
+    serviceAccountName: argo-events-sensor
+
+---
+# Sensor: tenant-offboard — webhook → submit tenant-offboard WorkflowTemplate
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: tenant-offboard-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: offboard-request
+      eventSourceName: webhook-source
+      eventName: offboard-tenant
+
+  triggers:
+    - template:
+        name: submit-offboard-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: tenant-offboard-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: tenant-offboard
+                arguments:
+                  parameters:
+                    - name: tenant_id
+                    - name: scripts_image
+                      value: "platform-scripts:latest"
+          parameters:
+            - src:
+                dependencyName: offboard-request
+                dataKey: body.tenant_id
+              dest: spec.arguments.parameters.0.value
+
+  template:
+    serviceAccountName: argo-events-sensor
+
+---
+# Sensor: daily-health-check — calendar → submit cluster-health-check WorkflowTemplate
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: daily-health-check-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: daily-tick
+      eventSourceName: calendar-source
+      eventName: daily-health-check
+
+  triggers:
+    - template:
+        name: submit-health-check-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: cluster-health-check-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: cluster-health-check
+
+  template:
+    serviceAccountName: argo-events-sensor

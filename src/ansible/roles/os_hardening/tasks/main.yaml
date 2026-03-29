@@ -1,0 +1,45 @@
+---
+- name: Set sysctl parameters for Kubernetes
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ sysctl_kubernetes }}"
+
+- name: Disable unused filesystems
+  ansible.builtin.copy:
+    dest: "/etc/modprobe.d/disable-{{ item }}.conf"
+    content: "install {{ item }} /bin/true\n"
+    mode: "0644"
+  loop:
+    - cramfs
+    - freevxfs
+    - jffs2
+    - hfs
+    - hfsplus
+    - squashfs
+    - udf
+
+- name: Harden SSH daemon configuration
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 4' }
+  notify: restart sshd
+
+- name: Set file descriptor limits
+  ansible.builtin.blockinfile:
+    path: /etc/security/limits.conf
+    block: |
+      * soft nofile 65536
+      * hard nofile 65536
+    marker: "# {mark} ANSIBLE MANAGED — k8s limits"

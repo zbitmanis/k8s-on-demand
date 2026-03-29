@@ -1,0 +1,88 @@
+name: Release on pull request merge
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - next
+      - beta
+      - alpha
+
+permissions:
+  contents: read  # default — jobs override as needed
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write       # publish GitHub release + push version tag
+      issues: write         # comment on released issues
+      pull-requests: write  # comment on released pull requests
+      id-token: write       # OIDC for npm provenance
+    outputs:
+      version: ${{ steps.export_version.outputs.version }}
+      released: ${{ steps.export_version.outputs.released }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.2.2
+        with:
+          fetch-depth: 0   # full history required by semantic-release
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238  # v4.4.0
+        with:
+          node-version: lts/*
+
+      - name: Install release dependencies
+        run: npm install --no-package-lock
+
+      - name: Audit npm signatures
+        run: npm install --global corepack@latest && corepack npm audit signatures
+
+      # semantic-release analyses conventional commits, creates the GitHub
+      # release + git tag, writes the new version to .VERSION via exec plugin,
+      # and bumps Chart.yaml versions under src/app-of-apps/ and src/applications/.
+      # pinned version updated automatically by Renovate.
+      - name: Run semantic-release
+        run: npx -y semantic-release@25.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export version
+        id: export_version
+        shell: bash
+        run: |
+          if [ -f .VERSION ]; then
+            VERSION="$(cat .VERSION)"
+          fi
+          if [ -n "${VERSION:-}" ]; then
+            echo "Resolved new version set by semantic-release: $VERSION"
+            VERSION="${VERSION#v}"
+            echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
+            echo "released=true"     >> "$GITHUB_OUTPUT"
+          else
+            echo "No version was published by semantic-release."
+            echo "version="          >> "$GITHUB_OUTPUT"
+            echo "released=false"    >> "$GITHUB_OUTPUT"
+          fi
+
+  # Downstream job — runs only when a new version was actually released.
+  # Triggers the Terraform plan workflow so infrastructure changes are
+  # reviewed against the new tagged version.
+  notify-release:
+    name: Notify release
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write  # dispatch downstream workflows
+    steps:
+      - name: Trigger terraform plan on new release
+        run: |
+          gh workflow run terraform-plan.yml \
+            --ref "v${{ needs.release.outputs.version }}" \
+            --field version="${{ needs.release.outputs.version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

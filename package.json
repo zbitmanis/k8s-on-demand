@@ -1,0 +1,70 @@
+{
+  "name": "k8s-on-demand",
+  "private": true,
+  "devDependencies": {
+    "semantic-release": "25.0.1",
+    "@semantic-release/commit-analyzer": "^13.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "@semantic-release/github": "^11.0.0",
+    "@semantic-release/exec": "^7.0.0"
+  },
+  "release": {
+    "branches": [
+      "main",
+      "master",
+      { "name": "next", "prerelease": true },
+      { "name": "beta", "prerelease": true },
+      { "name": "alpha", "prerelease": true }
+    ],
+    "npmPublish": false,
+    "plugins": [
+      [
+        "@semantic-release/commit-analyzer",
+        {
+          "preset": "conventionalcommits",
+          "releaseRules": [
+            { "type": "feat",     "release": "minor" },
+            { "type": "fix",      "release": "patch" },
+            { "type": "perf",     "release": "patch" },
+            { "type": "refactor", "release": "patch" },
+            { "type": "docs",     "release": false   },
+            { "type": "style",    "release": false   },
+            { "type": "test",     "release": false   },
+            { "type": "ci",       "release": false   },
+            { "type": "chore",    "release": false   },
+            { "breaking": true,   "release": "major" }
+          ]
+        }
+      ],
+      [
+        "@semantic-release/release-notes-generator",
+        {
+          "preset": "conventionalcommits",
+          "presetConfig": {
+            "types": [
+              { "type": "feat",     "section": "Features"         },
+              { "type": "fix",      "section": "Bug Fixes"        },
+              { "type": "perf",     "section": "Performance"      },
+              { "type": "refactor", "section": "Refactoring"      },
+              { "type": "docs",     "section": "Documentation", "hidden": true },
+              { "type": "chore",    "section": "Chores",        "hidden": true },
+              { "type": "ci",       "section": "CI",            "hidden": true }
+            ]
+          }
+        }
+      ],
+      "@semantic-release/github",
+      [
+        "@semantic-release/exec",
+        {
+          "prepareCmd": [
+            "echo v${nextRelease.version} > .VERSION",
+            "sed -i \"s/^version:.*/version: ${nextRelease.version}/\" src/app-of-apps/Chart.yaml",
+            "for chart in src/applications/*/Chart.yaml; do sed -i \"s/^version:.*/version: ${nextRelease.version}/\" \"$chart\"; done"
+          ].join(" && "),
+          "successCmd": "echo 'Released ${nextRelease.version}'"
+        }
+      ]
+    ]
+  }
+}

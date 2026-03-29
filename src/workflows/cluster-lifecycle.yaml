@@ -1,0 +1,363 @@
+---
+# Cluster lifecycle WorkflowTemplates: provision, destroy, health-check
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cluster-provision
+  namespace: argo
+spec:
+  entrypoint: provision
+  serviceAccountName: argo-workflow-runner
+
+  arguments:
+    parameters:
+      - name: environment
+        value: staging
+
+  templates:
+    - name: provision
+      inputs:
+        parameters:
+          - name: environment
+      steps:
+        - - name: dispatch-provision
+            template: dispatch-github-actions
+            arguments:
+              parameters:
+                - name: workflow
+                  value: provision-cluster.yaml
+                - name: inputs
+                  value: '{"environment": "{{inputs.parameters.environment}}"}'
+
+    # ── Dispatch a GitHub Actions workflow and poll until complete ─────────────
+    - name: dispatch-github-actions
+      inputs:
+        parameters:
+          - name: workflow
+          - name: inputs
+      script:
+        image: python:3.12-slim
+        command: [python]
+        source: |
+          import json, os, time, urllib.request, urllib.error, sys
+
+          token   = os.environ["GH_TOKEN"]
+          org     = os.environ["GH_ORG"]
+          repo    = os.environ["GH_REPO"]
+          workflow = "{{inputs.parameters.workflow}}"
+          inputs  = json.loads("""{{inputs.parameters.inputs}}""")
+
+          base = f"https://api.github.com/repos/{org}/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def gh_request(method, path, body=None):
+              data = json.dumps(body).encode() if body else None
+              req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read()) if r.length else {}
+              except urllib.error.HTTPError as e:
+                  print(f"GitHub API error {e.code}: {e.read().decode()}", file=sys.stderr)
+                  sys.exit(1)
+
+          # Record current time to find the triggered run
+          triggered_at = int(time.time())
+          gh_request("POST", f"/actions/workflows/{workflow}/dispatches", {"ref": "main", "inputs": inputs})
+          print(f"Dispatched {workflow} with inputs: {inputs}")
+
+          # Wait for the run to appear and complete (poll up to 35 min)
+          timeout = 2100
+          elapsed = 0
+          run_id = None
+
+          while elapsed < timeout:
+              time.sleep(15)
+              elapsed += 15
+              runs = gh_request("GET", f"/actions/workflows/{workflow}/runs?per_page=5")
+              for run in runs.get("workflow_runs", []):
+                  created = run.get("created_at", "")
+                  # Match runs created after dispatch
+                  if run["status"] != "completed":
+                      run_id = run["id"]
+                      print(f"  Run {run_id}: status={run['status']} ({elapsed}s)")
+                      break
+                  if run_id and run["id"] == run_id:
+                      conclusion = run.get("conclusion")
+                      print(f"  Run {run_id} completed: {conclusion}")
+                      if conclusion != "success":
+                          print(f"GitHub Actions workflow failed: {conclusion}", file=sys.stderr)
+                          sys.exit(1)
+                      sys.exit(0)
+
+          print(f"Timed out waiting for {workflow} to complete", file=sys.stderr)
+          sys.exit(1)
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+          - name: GH_ORG
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: github-org
+          - name: GH_REPO
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: github-repo
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cluster-destroy
+  namespace: argo
+spec:
+  entrypoint: destroy
+  serviceAccountName: argo-workflow-runner
+
+  arguments:
+    parameters:
+      - name: environment
+        value: staging
+
+  templates:
+    - name: destroy
+      inputs:
+        parameters:
+          - name: environment
+      steps:
+        - - name: dispatch-destroy
+            template: dispatch-github-actions
+            arguments:
+              parameters:
+                - name: workflow
+                  value: destroy-cluster.yaml
+                - name: inputs
+                  value: '{"environment": "{{inputs.parameters.environment}}", "confirm": "destroy"}'
+
+    # ── Reuse the same dispatch template ──────────────────────────────────────
+    - name: dispatch-github-actions
+      inputs:
+        parameters:
+          - name: workflow
+          - name: inputs
+      script:
+        image: python:3.12-slim
+        command: [python]
+        source: |
+          import json, os, time, urllib.request, urllib.error, sys
+
+          token    = os.environ["GH_TOKEN"]
+          org      = os.environ["GH_ORG"]
+          repo     = os.environ["GH_REPO"]
+          workflow = "{{inputs.parameters.workflow}}"
+          inputs   = json.loads("""{{inputs.parameters.inputs}}""")
+
+          base = f"https://api.github.com/repos/{org}/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def gh_request(method, path, body=None):
+              data = json.dumps(body).encode() if body else None
+              req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read()) if r.length else {}
+              except urllib.error.HTTPError as e:
+                  print(f"GitHub API error {e.code}: {e.read().decode()}", file=sys.stderr)
+                  sys.exit(1)
+
+          gh_request("POST", f"/actions/workflows/{workflow}/dispatches", {"ref": "main", "inputs": inputs})
+          print(f"Dispatched {workflow} with inputs: {inputs}")
+
+          timeout = 1800  # 30 min
+          elapsed = 0
+          run_id = None
+
+          while elapsed < timeout:
+              time.sleep(15)
+              elapsed += 15
+              runs = gh_request("GET", f"/actions/workflows/{workflow}/runs?per_page=5")
+              for run in runs.get("workflow_runs", []):
+                  if run["status"] != "completed":
+                      run_id = run["id"]
+                      print(f"  Run {run_id}: status={run['status']} ({elapsed}s)")
+                      break
+                  if run_id and run["id"] == run_id:
+                      conclusion = run.get("conclusion")
+                      print(f"  Run {run_id} completed: {conclusion}")
+                      if conclusion != "success":
+                          print(f"GitHub Actions workflow failed: {conclusion}", file=sys.stderr)
+                          sys.exit(1)
+                      sys.exit(0)
+
+          print(f"Timed out waiting for {workflow} to complete", file=sys.stderr)
+          sys.exit(1)
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+          - name: GH_ORG
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: github-org
+          - name: GH_REPO
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: github-repo
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cluster-health-check
+  namespace: argo
+spec:
+  entrypoint: health-check
+  serviceAccountName: argo-workflow-runner
+
+  templates:
+    - name: health-check
+      steps:
+        - - name: check-nodes
+            template: check-nodes
+        - - name: check-system-pods
+            template: check-system-pods
+        - - name: check-argocd-apps
+            template: check-argocd-apps
+        - - name: post-summary
+            template: post-slack-summary
+            arguments:
+              parameters:
+                - name: nodes_result
+                  value: "{{steps.check-nodes.outputs.result}}"
+                - name: pods_result
+                  value: "{{steps.check-system-pods.outputs.result}}"
+                - name: argocd_result
+                  value: "{{steps.check-argocd-apps.outputs.result}}"
+
+    - name: check-nodes
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready" | wc -l | tr -d ' ')
+          TOTAL=$(kubectl get nodes --no-headers | wc -l | tr -d ' ')
+          if [[ "$NOT_READY" -gt 0 ]]; then
+            echo "WARN: $NOT_READY/$TOTAL nodes not Ready"
+          else
+            echo "OK: $TOTAL/$TOTAL nodes Ready"
+          fi
+
+    - name: check-system-pods
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          SYSTEM_NS="argocd argo argo-events cert-manager external-secrets gatekeeper-system aws ingress-nginx monitoring"
+          FAILED=0
+          for ns in $SYSTEM_NS; do
+            NOT_RUNNING=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null \
+              | grep -v "Running\|Completed" | wc -l | tr -d ' ')
+            if [[ "$NOT_RUNNING" -gt 0 ]]; then
+              echo "WARN: $NOT_RUNNING pods not Running in namespace $ns"
+              FAILED=$(( FAILED + NOT_RUNNING ))
+            fi
+          done
+          if [[ "$FAILED" -eq 0 ]]; then
+            echo "OK: all system pods Running"
+          fi
+
+    - name: check-argocd-apps
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          PF_PID=$!
+          sleep 5
+
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+          argocd login localhost:8080 --username admin --password "$ARGOCD_PASS" --insecure
+
+          UNHEALTHY=0
+          while IFS= read -r line; do
+            APP=$(echo "$line" | awk '{print $1}')
+            HEALTH=$(echo "$line" | awk '{print $2}')
+            SYNC=$(echo "$line" | awk '{print $3}')
+            if [[ "$HEALTH" != "Healthy" || "$SYNC" != "Synced" ]]; then
+              echo "WARN: $APP health=$HEALTH sync=$SYNC"
+              UNHEALTHY=$(( UNHEALTHY + 1 ))
+            fi
+          done < <(argocd app list --output wide --no-headers 2>/dev/null | awk '{print $1,$7,$6}')
+
+          if [[ "$UNHEALTHY" -eq 0 ]]; then
+            echo "OK: all ArgoCD apps Healthy and Synced"
+          fi
+          kill $PF_PID 2>/dev/null || true
+
+    - name: post-slack-summary
+      inputs:
+        parameters:
+          - name: nodes_result
+          - name: pods_result
+          - name: argocd_result
+      script:
+        image: python:3.12-slim
+        command: [python]
+        source: |
+          import json, os, urllib.request
+
+          webhook = os.environ["SLACK_WEBHOOK_URL"]
+          nodes   = """{{inputs.parameters.nodes_result}}"""
+          pods    = """{{inputs.parameters.pods_result}}"""
+          argocd  = """{{inputs.parameters.argocd_result}}"""
+
+          has_warn = any("WARN" in s for s in [nodes, pods, argocd])
+          color = "warning" if has_warn else "good"
+          icon  = ":warning:" if has_warn else ":white_check_mark:"
+
+          text = f"*Nodes:* {nodes}\n*System pods:* {pods}\n*ArgoCD apps:* {argocd}"
+          payload = {"attachments": [{"color": color, "title": f"{icon} Daily cluster health check", "text": text, "mrkdwn_in": ["text"]}]}
+          data = json.dumps(payload).encode()
+          req = urllib.request.Request(webhook, data=data, headers={"Content-Type": "application/json"}, method="POST")
+          urllib.request.urlopen(req, timeout=10)
+        env:
+          - name: SLACK_WEBHOOK_URL
+            valueFrom:
+              secretKeyRef:
+                name: platform-slack
+                key: webhook-url
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
