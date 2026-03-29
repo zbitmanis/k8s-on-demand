@@ -1,0 +1,15 @@
+# Ansible Galaxy role dependencies
+# Install with: ansible-galaxy role install -p common_roles/ -r requirements.yml
+---
+roles: []
+  # Example:
+  # - name: geerlingguy.docker
+  #   version: "6.1.0"
+
+collections:
+  - name: amazon.aws
+    version: ">=7.0.0"
+  - name: kubernetes.core
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=9.0.0"

@@ -1,0 +1,11 @@
+# Active tenant registry.
+# Updated automatically by the tenant-onboard / tenant-offboard Argo Workflows.
+# Used by the onboarding validator to check namespace name uniqueness.
+
+tenants:
+  - id: example-tenant
+    namespace: example-tenant
+    tier: standard
+    region: eu-west-1
+    state: active
+    created_at: "2025-01-15T10:00:00Z"

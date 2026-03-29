@@ -1,0 +1,11 @@
+apiVersion: v2
+name: external-secrets-operator
+description: External Secrets Operator — sync secrets from AWS Secrets Manager
+type: application
+version: 0.1.0
+appVersion: "0.9.14"
+
+dependencies:
+  - name: external-secrets
+    version: "0.9.14"
+    repository: https://charts.external-secrets.io

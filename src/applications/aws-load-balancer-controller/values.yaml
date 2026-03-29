@@ -1,0 +1,29 @@
+aws-load-balancer-controller:
+  # clusterName must match the EKS cluster name — set via ArgoCD ApplicationSet or helm --set
+  clusterName: "platform-dev"
+
+  replicaCount: 1
+
+  serviceAccount:
+    create: true
+    name: aws-load-balancer-controller
+    annotations:
+      # IRSA role ARN — pre-created per tenant by Terraform
+      # Platform-level LBC uses a platform role; value injected by ArgoCD or override
+      eks.amazonaws.com/role-arn: ""
+
+  nodeSelector:
+    node-role: system
+
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: system
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

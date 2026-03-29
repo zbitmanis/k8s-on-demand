@@ -1,0 +1,94 @@
+thanos:
+  # Only deploy the components needed alongside the Prometheus sidecar:
+  # - query: fans out queries to Prometheus + sidecar
+  # - storegateway: reads historical blocks from S3
+  # - compactor: downsamples and removes expired blocks
+
+  query:
+    enabled: true
+    replicaCount: 1
+
+    nodeSelector:
+      node-role: system
+
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+  storegateway:
+    enabled: true
+    replicaCount: 1
+
+    nodeSelector:
+      node-role: system
+
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    persistence:
+      enabled: true
+      storageClass: gp3
+      size: 5Gi
+
+  compactor:
+    enabled: true
+
+    nodeSelector:
+      node-role: system
+
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    # Retention: short — dev cluster data is ephemeral
+    retentionResolutionRaw: 30d
+    retentionResolution5m: 30d
+    retentionResolution1h: 30d
+
+    persistence:
+      enabled: true
+      storageClass: gp3
+      size: 5Gi
+
+  # Sidecar config: injected into Prometheus via kube-prometheus-stack values above.
+  # The upload interval is set to 5m (not the default 2h) so blocks are flushed
+  # before cluster destroy — preventing data loss on `terraform destroy`.
+  objstoreConfig: |-
+    type: S3
+    config:
+      bucket: ""
+      endpoint: ""
+      region: eu-west-1
+
+  # IRSA annotation for thanos-sidecar service account (per-tenant roles in iam-tenant-roles module)
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: ""

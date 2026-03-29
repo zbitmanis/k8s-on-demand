@@ -1,0 +1,21 @@
+tenant:
+  id: example-tenant
+  name: Example Tenant
+  tier: standard                 # standard | premium | enterprise
+  region: eu-west-1
+  owner_email: platform@example.com
+
+namespace:
+  name: example-tenant           # defaults to tenant.id
+
+quotas:
+  requests.cpu: "4"
+  requests.memory: 8Gi
+  limits.cpu: "8"
+  limits.memory: 16Gi
+  pods: "50"
+  services: "10"
+  persistentvolumeclaims: "10"
+
+state: active                    # active | suspended | deprovisioning
+created_at: "2025-01-15T10:00:00Z"

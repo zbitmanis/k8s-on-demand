@@ -1,0 +1,7 @@
+---
+# Variables for system node group (node-role=system)
+node_role: system
+node_taint: "node-role=system:NoSchedule"
+node_labels:
+  node-role: system
+  platform/managed: "true"

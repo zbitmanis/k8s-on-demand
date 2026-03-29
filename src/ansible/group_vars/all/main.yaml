@@ -1,0 +1,29 @@
+---
+# Injected at runtime by GitHub Actions
+tenant_id: "{{ lookup('env', 'TENANT_ID') }}"
+aws_region: "{{ lookup('env', 'AWS_REGION') }}"
+
+# Container runtime
+containerd_version: "1.7.11"
+containerd_cgroup_driver: systemd
+
+# ECR registry mirror (replace <account> with AWS account ID)
+ecr_registry: "<account>.dkr.ecr.{{ aws_region }}.amazonaws.com"
+ecr_pause_image: "602401143452.dkr.ecr.{{ aws_region }}.amazonaws.com/eks/pause:3.5"
+
+# Node exporter
+node_exporter_version: "1.7.0"
+node_exporter_port: 9100
+
+# Sysctl tuning for Kubernetes
+sysctl_kubernetes:
+  - name: net.ipv4.ip_forward
+    value: "1"
+  - name: net.bridge.bridge-nf-call-iptables
+    value: "1"
+  - name: net.bridge.bridge-nf-call-ip6tables
+    value: "1"
+  - name: fs.inotify.max_user_watches
+    value: "524288"
+  - name: vm.max_map_count
+    value: "262144"

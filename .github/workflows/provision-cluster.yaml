@@ -1,0 +1,210 @@
+name: Provision cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC for AWS auth
+
+env:
+  TF_DIR: src/terraform/environments/production
+  ARGOCD_VERSION: v2.10.6
+  ARGOCD_NAMESPACE: argocd
+
+jobs:
+  # ── 1. Terraform apply ────────────────────────────────────────────────────
+  terraform-apply:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    outputs:
+      cluster_name:     ${{ steps.tf-outputs.outputs.cluster_name }}
+      cluster_endpoint: ${{ steps.tf-outputs.outputs.cluster_endpoint }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
+          aws-region:     ${{ secrets.AWS_REGION }}
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="key=cluster/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform apply
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform apply \
+            -auto-approve \
+            -var-file=terraform.tfvars \
+            -var="environment=${{ inputs.environment }}"
+
+      - name: Export Terraform outputs
+        id: tf-outputs
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)"     >> "$GITHUB_OUTPUT"
+          echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)" >> "$GITHUB_OUTPUT"
+
+  # ── 2. Bootstrap ArgoCD ───────────────────────────────────────────────────
+  bootstrap-argocd:
+    name: Bootstrap ArgoCD
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
+          aws-region:     ${{ secrets.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ needs.terraform-apply.outputs.cluster_name }}" \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Create argocd namespace
+        run: kubectl create namespace "${{ env.ARGOCD_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install ArgoCD
+        run: |
+          kubectl apply -n "${{ env.ARGOCD_NAMESPACE }}" \
+            -f "https://raw.githubusercontent.com/argoproj/argo-cd/${{ env.ARGOCD_VERSION }}/manifests/install.yaml"
+
+      - name: Wait for ArgoCD server
+        run: |
+          kubectl rollout status deployment/argocd-server \
+            -n "${{ env.ARGOCD_NAMESPACE }}" \
+            --timeout=300s
+
+      - name: Apply App-of-Apps Application
+        run: |
+          # Substitute the repo URL before applying
+          sed "s|\${GITHUB_REPOSITORY}|${{ github.repository }}|g" \
+            .github/argocd/app-of-apps-application.yaml \
+            | kubectl apply -f -
+
+  # ── 3. Wait for all system apps healthy ──────────────────────────────────
+  wait-healthy:
+    name: Wait for system apps
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, bootstrap-argocd]
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
+          aws-region:     ${{ secrets.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ needs.terraform-apply.outputs.cluster_name }}" \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            "https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64"
+          chmod +x /usr/local/bin/argocd
+
+      - name: Wait for all apps healthy (timeout 15 min)
+        run: |
+          ARGOCD_SERVER="localhost:8080"
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+
+          # Port-forward ArgoCD in background
+          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+          PF_PID=$!
+          sleep 5
+
+          argocd login "$ARGOCD_SERVER" \
+            --username admin \
+            --password "$ARGOCD_PASS" \
+            --insecure
+
+          EXPECTED_APPS="aws-load-balancer-controller cert-manager external-secrets-operator gatekeeper ingress-nginx prometheus thanos-sidecar"
+          TIMEOUT=900  # 15 minutes
+          ELAPSED=0
+
+          while true; do
+            ALL_HEALTHY=true
+            for app in $EXPECTED_APPS; do
+              STATUS=$(argocd app get "$app" --output json 2>/dev/null \
+                | jq -r '.status.health.status // "Unknown"')
+              SYNC=$(argocd app get "$app" --output json 2>/dev/null \
+                | jq -r '.status.sync.status // "Unknown"')
+              if [[ "$STATUS" != "Healthy" || "$SYNC" != "Synced" ]]; then
+                echo "  $app: health=$STATUS sync=$SYNC"
+                ALL_HEALTHY=false
+              fi
+            done
+
+            if $ALL_HEALTHY; then
+              echo "All system apps are Healthy and Synced."
+              break
+            fi
+
+            if (( ELAPSED >= TIMEOUT )); then
+              echo "Timeout waiting for system apps to become healthy."
+              kill $PF_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "Waiting... (${ELAPSED}s elapsed)"
+            sleep 30
+            ELAPSED=$(( ELAPSED + 30 ))
+          done
+
+          kill $PF_PID 2>/dev/null || true
+
+  # ── 4. Notify ─────────────────────────────────────────────────────────────
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, wait-healthy]
+    if: always()
+
+    steps:
+      - name: Post Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [[ "${{ needs.wait-healthy.result }}" == "success" ]]; then
+            COLOR="good"
+            TEXT=":white_check_mark: Cluster *${{ needs.terraform-apply.outputs.cluster_name }}* provisioned and healthy.\nEndpoint: \`${{ needs.terraform-apply.outputs.cluster_endpoint }}\`\n\`aws eks update-kubeconfig --name ${{ needs.terraform-apply.outputs.cluster_name }} --region ${{ secrets.AWS_REGION }}\`"
+          else
+            COLOR="danger"
+            TEXT=":x: Cluster provisioning failed for *${{ needs.terraform-apply.outputs.cluster_name }}*. Check the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$TEXT\",\"mrkdwn_in\":[\"text\"]}]}"

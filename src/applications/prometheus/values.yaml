@@ -1,0 +1,84 @@
+kube-prometheus-stack:
+  # Short retention — Thanos sidecar ships metrics to S3 for long-term storage
+  prometheus:
+    prometheusSpec:
+      retention: 2h
+      retentionSize: "8GB"
+
+      # Discover ServiceMonitors from all namespaces (not just the Helm release namespace)
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+
+      # Thanos sidecar injection
+      thanos:
+        image:
+          registry: quay.io
+          repository: thanos/thanos
+          tag: v0.35.0
+        objectStorageConfig:
+          secret:
+            type: S3
+            config:
+              # Bucket and region resolved at runtime from cluster environment
+              bucket: ""
+              endpoint: ""
+              region: "eu-west-1"
+
+      externalLabels:
+        cluster: platform-dev
+        environment: development
+
+      nodeSelector:
+        node-role: system
+
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: system
+          effect: NoSchedule
+
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: gp3
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 10Gi
+
+  alertmanager:
+    alertmanagerSpec:
+      nodeSelector:
+        node-role: system
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: system
+          effect: NoSchedule
+
+  # Grafana — disabled (no persistent dashboards needed for dev on-demand cluster)
+  grafana:
+    enabled: false
+
+  prometheusOperator:
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+  kube-state-metrics:
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+
+  prometheus-node-exporter:
+    # Node exporter must run on all nodes — no node selector or toleration restrictions
+    tolerations:
+      - operator: Exists

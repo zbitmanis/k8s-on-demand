@@ -1,0 +1,15 @@
+---
+plugin: aws_ec2
+regions:
+  - "{{ lookup('env', 'AWS_REGION') }}"
+filters:
+  tag:TenantID: "{{ lookup('env', 'TENANT_ID') }}"
+  tag:ManagedBy: terraform
+  instance-state-name: running
+keyed_groups:
+  - key: tags['node-role']
+    prefix: node_role
+hostnames:
+  - private-ip-address
+compose:
+  ansible_host: private_ip_address

@@ -1,0 +1,51 @@
+---
+- name: Debian/Ubuntu related tasks
+  include_tasks: debian.yaml
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+- name: Set up time sync configuration
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+    mode: "0644"
+  when: prepare_node_config_chrony
+  notify: restart chrony
+
+- name: Enable chrony service
+  ansible.builtin.systemd_service:
+    enabled: true
+    state: started
+    name: chrony
+  when: prepare_node_config_chrony
+
+- name: Create system groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid }}"
+  loop: "{{ prepare_node_system_groups }}"
+
+- name: Create system users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    group: "{{ item.group }}"
+    home: "{{ item.home }}"
+    shell: "{{ item.shell }}"
+    create_home: "{{ item.create_home | default(false) }}"
+  loop: "{{ prepare_node_system_users }}"
+
+- name: Create system directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    mode: "{{ item.mode }}"
+    owner: "{{ item.user }}"
+    group: "{{ item.group }}"
+    state: directory
+  loop: "{{ prepare_node_system_folders }}"
+
+- name: Add host entries
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ipv4 }} {{ item.name }} {{ item.name }}.{{ item.domain }}"
+    state: present
+  loop: "{{ prepare_node_hosts }}"

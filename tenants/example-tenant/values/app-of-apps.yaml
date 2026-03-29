@@ -1,0 +1,10 @@
+# Per-tenant App-of-Apps value overrides.
+# In the single-cluster model the destination server is always the shared cluster.
+# Only override app-level settings that differ from the platform defaults.
+
+spec:
+  gitops:
+    applications:
+      # Example: tenants on the free tier have Thanos disabled
+      # thanosSidecar:
+      #   isEnabled: false

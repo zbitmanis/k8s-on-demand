@@ -1,0 +1,11 @@
+apiVersion: v2
+name: aws-load-balancer-controller
+description: AWS Load Balancer Controller — provision ALBs and NLBs from Kubernetes
+type: application
+version: 0.1.0
+appVersion: "2.7.2"
+
+dependencies:
+  - name: aws-load-balancer-controller
+    version: "1.7.2"
+    repository: https://aws.github.io/eks-charts
