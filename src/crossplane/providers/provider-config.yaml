@@ -1,0 +1,17 @@
+# ProviderConfig — tells the AWS provider how to authenticate.
+# WebIdentity means: use the IRSA token mounted by the pod identity
+# webhook. No Secret reference needed.
+apiVersion: aws.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: WebIdentity
+    webIdentity:
+      # roleARN is sourced from the ServiceAccount annotation at runtime.
+      # This field is optional when using the pod identity webhook —
+      # include it explicitly for clarity and auditability.
+      roleARN: arn:aws:iam::<account-id>:role/crossplane-provider-aws
+  # All managed resources in Compositions will inherit this ProviderConfig
+  # unless they override it explicitly.

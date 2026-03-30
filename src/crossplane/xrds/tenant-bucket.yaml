@@ -1,0 +1,65 @@
+# XRD — defines the TenantBucket composite resource and its Claim schema.
+# Tenants submit a BucketClaim in their namespace; Crossplane fulfils it
+# by running the TenantBucket Composition which creates an S3 bucket
+# and scopes the bucket policy to the tenant's IRSA role.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: tenantbuckets.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    kind: TenantBucket
+    plural: tenantbuckets
+  claimNames:
+    kind: BucketClaim
+    plural: bucketclaims
+
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - parameters
+              properties:
+                parameters:
+                  type: object
+                  required:
+                    - tenantId
+                    - region
+                  properties:
+                    tenantId:
+                      type: string
+                      description: Tenant identifier — used to name and tag the bucket.
+                    region:
+                      type: string
+                      description: AWS region for the bucket.
+                      default: eu-west-1
+                    versioning:
+                      type: boolean
+                      description: Enable S3 versioning.
+                      default: false
+                    lifecycleDays:
+                      type: integer
+                      description: Expire non-current object versions after N days.
+                      default: 90
+                    irsaRoleArn:
+                      type: string
+                      description: |
+                        ARN of the tenant IRSA role that will be granted read/write
+                        access via the bucket policy. Set by the onboarding workflow.
+            status:
+              type: object
+              properties:
+                bucketName:
+                  type: string
+                  description: The provisioned S3 bucket name.
+                bucketArn:
+                  type: string
+                  description: The ARN of the provisioned S3 bucket.

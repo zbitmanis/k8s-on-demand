@@ -1,0 +1,45 @@
+{{- if .Values.spec.gitops.tenantApplicationSet.isEnabled | default true }}
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tenant-workloads
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: {{ .Values.spec.default.repoURL }}
+        revision: HEAD
+        directories:
+          - path: tenants/*
+          - path: tenants/_archived
+            exclude: true
+          - path: tenants/_registry
+            exclude: true
+  template:
+    metadata:
+      name: "{{`{{path.basenameNormalized}}`}}-workloads"
+      namespace: argocd
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: "{{`{{path.basenameNormalized}}`}}"
+      source:
+        repoURL: {{ .Values.spec.default.repoURL }}
+        targetRevision: HEAD
+        path: "tenants/{{`{{path}}`}}/argocd"
+      destination:
+        server: {{ .Values.spec.destination.server }}
+        namespace: "{{`{{path.basenameNormalized}}`}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false   # namespace created by onboarding workflow
+        retry:
+          limit: 3
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 2m
+{{- end }}

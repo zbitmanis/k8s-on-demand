@@ -1,0 +1,165 @@
+# Composition — fulfils a BucketClaim by creating:
+#   1. An S3 bucket named <tenantId>-<claim-name>
+#   2. Server-side encryption (AES256)
+#   3. Public access block (all options enabled)
+#   4. Versioning (if parameters.versioning == true)
+#   5. Lifecycle rule for non-current version expiry
+#   6. A bucket policy granting the tenant IRSA role read/write access
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenant-bucket
+  labels:
+    platform.example.com/composition: tenant-bucket
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.com/v1alpha1
+    kind: TenantBucket
+
+  mode: Pipeline
+
+  pipeline:
+    - step: create-bucket
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+
+          - name: s3-bucket
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: Bucket
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  region: eu-west-1
+                  tags:
+                    managed-by: crossplane
+                    platform: k8s-on-demand
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.tenantId
+                toFieldPath: metadata.annotations[crossplane.io/external-name]
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "%s-data"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.tenantId
+                toFieldPath: spec.forProvider.tags[tenant]
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.arn
+                toFieldPath: status.bucketArn
+              - type: ToCompositeFieldPath
+                fromFieldPath: metadata.annotations[crossplane.io/external-name]
+                toFieldPath: status.bucketName
+
+          - name: s3-encryption
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: BucketServerSideEncryptionConfiguration
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  region: eu-west-1
+                  bucketSelector:
+                    matchControllerRef: true
+                  rule:
+                    - applyServerSideEncryptionByDefault:
+                        - sseAlgorithm: AES256
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+
+          - name: s3-public-access-block
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: BucketPublicAccessBlock
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  region: eu-west-1
+                  bucketSelector:
+                    matchControllerRef: true
+                  blockPublicAcls: true
+                  blockPublicPolicy: true
+                  ignorePublicAcls: true
+                  restrictPublicBuckets: true
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+
+          - name: s3-lifecycle
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: BucketLifecycleConfiguration
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  region: eu-west-1
+                  bucketSelector:
+                    matchControllerRef: true
+                  rule:
+                    - id: expire-noncurrent
+                      status: Enabled
+                      noncurrentVersionExpiration:
+                        - noncurrentDays: 90
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.lifecycleDays
+                toFieldPath: spec.forProvider.rule[0].noncurrentVersionExpiration[0].noncurrentDays
+
+          - name: s3-bucket-policy
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: BucketPolicy
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  region: eu-west-1
+                  bucketSelector:
+                    matchControllerRef: true
+                  policy: ""   # patched below via CombineFromComposite
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: status.bucketArn
+                    - fromFieldPath: spec.parameters.irsaRoleArn
+                  strategy: string
+                  string:
+                    fmt: |
+                      {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                          {
+                            "Sid": "TenantReadWrite",
+                            "Effect": "Allow",
+                            "Principal": { "AWS": "%s" },
+                            "Action": [
+                              "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                              "s3:ListBucket", "s3:GetBucketLocation"
+                            ],
+                            "Resource": ["%s", "%s/*"]
+                          }
+                        ]
+                      }
+                toFieldPath: spec.forProvider.policy

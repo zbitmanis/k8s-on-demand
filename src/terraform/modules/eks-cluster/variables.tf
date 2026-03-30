@@ -31,17 +31,29 @@ variable "intra_subnet_ids" {
 
 variable "terraform_role_arn" {
   type        = string
-  description = "IAM role ARN for Terraform execution (added to aws-auth for bootstrap)"
+  description = "IAM role ARN for Terraform/GitHub Actions execution. Granted AmazonEKSClusterAdminPolicy via EKS Access Entry (API mode). This is the GHA OIDC role — no static credentials."
 }
 
 variable "argocd_role_arn" {
   type        = string
-  description = "IAM role ARN for ArgoCD (added to aws-auth)"
+  description = "IAM role ARN for ArgoCD (IRSA). Mapped to Kubernetes RBAC group platform:argocd — permissions controlled by ClusterRoleBindings in platform-rbac app."
 }
 
 variable "workflow_runner_role_arn" {
   type        = string
-  description = "IAM role ARN for Argo Workflow runner (added to aws-auth)"
+  description = "IAM role ARN for Argo Workflow runner pods (IRSA). Mapped to Kubernetes RBAC group platform:workflow-runner."
+}
+
+variable "break_glass_role_arn" {
+  type        = string
+  description = "IAM role ARN for emergency break-glass access (MFA required). Granted AmazonEKSClusterAdminPolicy. Should never be used in normal operations."
+  default     = ""
+}
+
+variable "ops_cluster_access_role_arn" {
+  type        = string
+  description = "IAM role ARN for engineer kubectl access via Google Workspace SAML (saml2aws). Mapped to Kubernetes RBAC group platform:ops — permissions controlled by ClusterRoleBinding in platform-rbac app."
+  default     = ""
 }
 
 variable "cluster_endpoint_public_access" {

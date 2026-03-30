@@ -1,0 +1,83 @@
+---
+# Non-sensitive platform configuration consumed by Argo Workflow steps
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  github-org: {{ .Values.github.org | quote }}
+  github-repo: {{ .Values.github.repo | quote }}
+  aws-region: {{ .Values.awsRegion | quote }}
+  suspend-lambda-name: {{ .Values.suspendLambdaName | quote }}
+---
+# Slack webhook — fetched from AWS Secrets Manager via ESO
+# Depends on ClusterSecretStore being ready (sync-wave 2)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: platform-slack
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform
+    kind: ClusterSecretStore
+  target:
+    name: platform-slack
+    creationPolicy: Owner
+  data:
+    - secretKey: webhook-url
+      remoteRef:
+        key: /platform/slack-webhook
+        property: url
+---
+# HMAC secret for authenticating webhook POST requests to Argo Events endpoints.
+# Must be in argo-events namespace where the EventSource runs.
+# Callers must include header: X-Argo-Events-Signature: sha256=<hmac-sha256-hex>
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: webhook-hmac-secret
+  namespace: argo-events
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform
+    kind: ClusterSecretStore
+  target:
+    name: webhook-hmac-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: secret
+      remoteRef:
+        key: /platform/webhook-hmac-secret
+        property: value
+---
+# GitHub token for dispatching GitHub Actions workflows
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: github-token
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform
+    kind: ClusterSecretStore
+  target:
+    name: github-token
+    creationPolicy: Owner
+  data:
+    - secretKey: token
+      remoteRef:
+        key: /platform/github-token
+        property: token

@@ -1,0 +1,13 @@
+# Crossplane AWS Provider
+# Pinned version — update via Renovate or manually.
+# Full provider includes all AWS service families. Use provider-aws-s3,
+# provider-aws-iam, etc. for a smaller footprint (family providers).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws:v1.14.0
+  runtimeConfigRef:
+    name: provider-aws-irsa
+  installRuntimeCredentials: false   # credentials come from IRSA, not a Secret

@@ -1,0 +1,48 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8snorootuid
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sNoRootUID
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8snorootuid
+        violation[{"msg": msg}] {
+          c := input_containers[_]
+          c.securityContext.runAsUser == 0
+          msg := sprintf("Container <%v> must not run as root (UID 0)", [c.name])
+        }
+        violation[{"msg": msg}] {
+          input.review.object.spec.securityContext.runAsUser == 0
+          msg := "Pod must not run as root (UID 0)"
+        }
+        input_containers[c] {
+          c := input.review.object.spec.containers[_]
+        }
+        input_containers[c] {
+          c := input.review.object.spec.initContainers[_]
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sNoRootUID
+metadata:
+  name: no-root-uid
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  enforcementAction: {{ .Values.enforceAction }}
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: {{ .Values.excludedNamespaces | toJson }}

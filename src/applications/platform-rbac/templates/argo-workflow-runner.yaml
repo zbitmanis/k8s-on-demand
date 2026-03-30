@@ -1,0 +1,66 @@
+---
+# ServiceAccount used by all Argo Workflow pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argo-workflow-runner
+  namespace: argo
+  annotations:
+    eks.amazonaws.com/role-arn: {{ .Values.workflowRunnerRoleArn | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-workflow-runner
+rules:
+  # Argo Workflows resources
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows", "workflowtemplates", "cronworkflows", "workflowartifactgctasks"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod management (executor needs to create/watch pods)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read cluster state
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  # ConfigMaps and Secrets in argo namespace (for artifact config, tokens)
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  # Port-forward to ArgoCD server (for poll-argocd-health steps)
+  - apiGroups: [""]
+    resources: ["pods/portforward", "services/portforward"]
+    verbs: ["create", "get"]
+  # ArgoCD AppProject and Application (for tenant onboarding steps)
+  - apiGroups: ["argoproj.io"]
+    resources: ["appprojects", "applications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ESO ClusterSecretStore (created by provision_namespace.py)
+  - apiGroups: ["external-secrets.io"]
+    resources: ["clustersecretstores"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace + RBAC (created by provision_namespace.py)
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-workflow-runner
+subjects:
+  - kind: ServiceAccount
+    name: argo-workflow-runner
+    namespace: argo
+roleRef:
+  kind: ClusterRole
+  name: argo-workflow-runner
+  apiGroup: rbac.authorization.k8s.io

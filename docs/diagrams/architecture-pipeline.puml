@@ -1,0 +1,32 @@
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+|Cluster Setup\n(one-time)|
+start
+:GitHub PR: add cluster config;
+:GitHub Actions\nterraform apply;
+note right: VPC + IAM + EKS + node groups
+:Ansible: OS hardening, runtime;
+:ArgoCD: deploy system apps;
+:Deploy Prometheus, Thanos sidecar;
+:Deploy Gatekeeper, ESO;
+:Deploy Ingress, Cert-manager;
+stop
+
+|Tenant Onboarding\n(per tenant)|
+start
+:Platform team:\nPOST /onboard-tenant;
+:Argo Events: trigger workflow;
+:Argo Workflows:\nvalidate config;
+:Create namespace;
+:Apply NetworkPolicy (default-deny);
+:Apply ResourceQuota + LimitRange;
+:Create RBAC for tenant;
+:Create ArgoCD Project;
+:Create ClusterSecretStore binding;
+:Crossplane fulfils tenant Claims\n(S3, IAM, RDS via Composition);
+:ArgoCD: ApplicationSet sync\n(tenant apps);
+:Notify tenant;
+stop
+@enduml

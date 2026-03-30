@@ -7,22 +7,42 @@ All tenants run on the same Kubernetes control plane but maintain strong isolati
 ResourceQuota, RBAC, and Gatekeeper admission constraints. Tenants are onboarded in ~2-3 minutes
 via Kubernetes-level operations, with no infrastructure provisioning per tenant.
 
+## Day 0 / Day 1 Split
+
+**Day 0** — runs once per cluster. All cluster-level AWS infrastructure.
+
+**Day 1** — runs per tenant. All tenant-scoped AWS resources, managed as Kubernetes
+objects via Crossplane Compositions. No Terraform state involved after Day 0.
+
+| Phase | Tooling | Scope |
+| --- | --- | --- |
+| Day 0 | Terraform + GitHub Actions | VPC, EKS, IAM roles, OIDC provider, node groups |
+| Day 0 | Ansible | Node bootstrap, OS hardening, container runtime |
+| Day 1 | Crossplane + AWS Provider | Per-tenant S3 buckets, IRSA roles, RDS, SQS |
+| Day 1 | ArgoCD + Argo Workflows | Namespace provisioning, GitOps delivery, lifecycle pipelines |
+
 ## Component Responsibilities
 
-| Component | Layer | Owns |
+| Component | Phase | Owns |
 | --- | --- | --- |
-| Terraform | Infrastructure | Single EKS cluster (one-time), VPC, subnets, IAM roles, node groups |
-| GitHub Actions | CI/CD | Terraform execution (cluster setup only), drift detection, plan/apply pipeline |
-| Ansible | Configuration | Node bootstrap, runtime config, OS hardening (one-time, shared nodes) |
-| Argo Workflows | Orchestration | Namespace provisioning, quota/policy application, ArgoCD project creation, ESO binding |
-| Argo Events | Automation | Event ingestion, webhook handling, trigger routing for tenant onboarding |
-| ArgoCD | GitOps | System apps (deployed once); per-tenant ApplicationSet for namespace-scoped apps |
-| Prometheus | Monitoring | Single instance scraping all namespaces; tenant isolation via `namespace` label |
-| Thanos | Monitoring | Long-term metric storage, same as before |
+| Terraform | Day 0 | Single EKS cluster, VPC, subnets, IAM roles, node groups, OIDC provider |
+| GitHub Actions | Day 0 | Terraform execution, drift detection, plan/apply pipeline |
+| Ansible | Day 0 | Node bootstrap, runtime config, OS hardening (one-time, shared nodes) |
+| Crossplane | Day 1 | Per-tenant AWS resources via Compositions (S3, IAM roles, RDS, SQS) |
+| Argo Workflows | Day 1 | Namespace provisioning, quota/policy application, Crossplane claim submission |
+| Argo Events | Day 1 | Event ingestion, webhook handling, trigger routing for tenant onboarding |
+| ArgoCD | Day 1 | System apps + Crossplane; per-tenant ApplicationSet for namespace-scoped apps |
+| Prometheus | Observability | Single instance scraping all namespaces; tenant isolation via `namespace` label |
+| Thanos | Observability | Long-term metric storage with namespace-aware prefix |
 | Gatekeeper | Admission | Cluster-wide policy enforcement: no privileged pods, no host access, system taint blocking |
 | Python | Scripting | Automation scripts, CLI tooling, API glue |
 
 ## High-Level Architecture
+
+![High-Level Architecture](images/architecture-high-level.svg)
+
+<details>
+<summary>PlantUML source — edit <code>docs/diagrams/</code>, then run <code>scripts/generate-diagrams.py</code></summary>
 
 ```plantuml
 @startuml
@@ -35,6 +55,7 @@ rectangle "Management Plane" {
   component "Argo Events\n(triggers)" as events #LightBlue
   component "Argo Workflows\n(orchestration)" as workflows #LightBlue
   component "ArgoCD\n(GitOps)" as argocd #LightGreen
+  component "Crossplane\n(Day 1 resources)" as crossplane #LightSalmon
   component "GitHub Actions\n(Terraform - one-time)" as gha #LightYellow
   component "Thanos\n(aggregator)" as thanos #LightCoral
   component "Prometheus\n(single instance)" as prom #LightCoral
@@ -43,6 +64,7 @@ rectangle "Management Plane" {
 events --> workflows : trigger
 workflows --> gha : cluster setup only
 prom --> thanos : remote write / sidecar
+argocd --> crossplane : sync Compositions
 
 rectangle "Shared EKS Cluster" as cluster #E8F5E9 {
   rectangle "System Node Group\n(tainted)" as sys_nodes {
@@ -67,10 +89,20 @@ tb --> prom : metrics
 tn --> prom : metrics
 
 cluster --> thanos : Thanos sidecar (from Prometheus)
+
+component "AWS API\n(S3, IAM, RDS, SQS)" as aws_api #LightGray
+crossplane --> aws_api : manage resources via Provider
 @enduml
 ```
 
+</details>
+
 ## Provisioning Pipeline Flow
+
+![Provisioning Pipeline Flow](images/architecture-pipeline.svg)
+
+<details>
+<summary>PlantUML source — edit <code>docs/diagrams/</code>, then run <code>scripts/generate-diagrams.py</code></summary>
 
 ```plantuml
 @startuml
@@ -100,11 +132,14 @@ start
 :Create RBAC for tenant;
 :Create ArgoCD Project;
 :Create ClusterSecretStore binding;
+:Crossplane fulfils tenant Claims\n(S3, IAM, RDS via Composition);
 :ArgoCD: ApplicationSet sync\n(tenant apps);
 :Notify tenant;
 stop
 @enduml
 ```
+
+</details>
 
 ## Cluster Architecture (Shared)
 

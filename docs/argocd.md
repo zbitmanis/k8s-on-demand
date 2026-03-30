@@ -18,6 +18,43 @@ for per-tenant workload deployment. This allows:
 * Per-tenant value overrides via layered values files
 * Dynamic tenant app deployment via ApplicationSet (add tenant config, apps auto-deploy)
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+component "ArgoCD" as argocd {
+  component "system-app-of-apps\nApplication" as root
+  component "App-of-Apps\nHelm Chart" as chart
+  component "System Applications" as sysapps {
+    component "ESO\nApplication" as eso
+    component "Prometheus\nApplication" as prom
+    component "Gatekeeper\nApplication" as gk
+    component "Ingress Nginx\nApplication" as nginx
+    component "Cert Manager\nApplication" as cert
+  }
+  component "ApplicationSet\n(tenant-workloads)" as appset
+  component "Per-Tenant\nApplications" as tenantapps
+}
+
+rectangle "EKS Cluster" as cluster {
+  component "management\nnamespace" as mgmt
+  component "tenant-ns\nnamespace" as tenantns
+  component "monitoring\nnamespace" as mon
+  component "gatekeeper-system\nnamespace" as gk_ns
+}
+
+root --> chart: renders
+chart --> sysapps: generates
+chart --> appset: includes
+appset --> tenantapps: discovers &\ngenerates per tenant
+sysapps --> mgmt: deploy
+sysapps --> mon: deploy
+sysapps --> gk_ns: deploy
+tenantapps --> tenantns: deploy
+@enduml
+```
+
 ## Repository Structure
 
 ```
@@ -273,6 +310,28 @@ spec:
 
 When a new tenant config is added to `tenants/<tenant-id>/`, the ApplicationSet
 automatically discovers it and creates an Application that deploys apps from `tenants/<tenant-id>/argocd/`.
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+actor User
+participant "Git\nRepository" as git
+participant "ArgoCD\nAPI" as argocd
+participant "ApplicationSet\nController" as appset
+participant "EKS Cluster" as cluster
+
+User -> git: git push tenants/<tenant-id>/argocd/apps.yaml
+git -> argocd: webhook notification (change detected)
+argocd -> appset: reconcile ApplicationSet
+appset -> git: scan tenants/* directories
+git -> appset: returns tenant-id directory
+appset -> argocd: generate Application for tenant-id
+argocd -> cluster: sync Application to cluster
+cluster -> cluster: deploy tenant workloads\nto tenant-id namespace
+@enduml
+```
 
 ## Adding a New System Application
 

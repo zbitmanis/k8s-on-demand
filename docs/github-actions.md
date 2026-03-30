@@ -18,6 +18,29 @@ AWS authentication uses OpenID Connect (OIDC). No IAM access keys exist in GitHu
 3. STS returns temporary credentials for the Terraform execution role
 4. Credentials are scoped to the specific workflow, branch, and repository
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+participant "GitHub Actions\nRunner" as runner
+participant "GitHub OIDC\nProvider" as github_oidc
+participant "AWS IAM\n(OIDC Provider)" as aws_iam
+participant "AWS STS" as sts
+participant "Terraform" as terraform
+
+runner -> github_oidc: Request JWT
+github_oidc -> runner: Issue JWT
+runner -> sts: sts:AssumeRoleWithWebIdentity\n(JWT, repo:org/repo:ref:refs/heads/main)
+sts -> aws_iam: Validate JWT\nagainst registered provider
+aws_iam -> sts: JWT valid
+sts -> runner: Return temporary\ncredentials
+runner -> terraform: Run Terraform\n(with AWS credentials)
+terraform -> runner: Execution complete
+
+@enduml
+```
+
 ### IAM OIDC Provider Setup
 
 ```hcl
@@ -118,6 +141,40 @@ GitHub Environments are configured under Settings → Environments.
 Production environment has `required_reviewers` set to the `platform-team` group.
 
 ## Plan Comments on PRs
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+partition Developer {
+  :Create feature branch;
+  :Commit terraform changes;
+  :Open PR;
+}
+
+partition "GitHub Actions" {
+  :Run tf-reviewer agent;
+  :terraform init + plan;
+  :Post plan summary comment;
+}
+
+partition "Human Review" {
+  :Review plan comment;
+  :Approve PR;
+}
+
+partition "GitHub Actions (merge)" {
+  if (CRITICAL changes?) then (yes)
+    :Require platform lead approval;
+  else (no)
+  endif
+  :terraform apply on merge to main;
+  :Update tfstate in S3;
+}
+
+@enduml
+```
 
 When a PR modifies files under `src/terraform/`, the plan job runs automatically
 and posts a formatted plan summary as a PR comment.

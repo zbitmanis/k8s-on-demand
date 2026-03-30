@@ -1,0 +1,37 @@
+{{- if .Values.spec.gitops.applications.gatekeeperPolicies.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gatekeeper-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.gatekeeperPolicies.namespace | default "gatekeeper-system" }}
+  project: {{ .Values.spec.gitops.applications.gatekeeperPolicies.project | default "platform-system" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.gatekeeperPolicies.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.gatekeeperPolicies.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.gatekeeperPolicies.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+{{- if .Values.spec.gitops.applications.gatekeeperPolicies.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+{{- end }}
+{{- end }}

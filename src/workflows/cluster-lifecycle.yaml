@@ -245,14 +245,20 @@ spec:
   templates:
     - name: health-check
       steps:
+        - - name: check-suspended
+            template: check-suspended
         - - name: check-nodes
             template: check-nodes
+            when: "{{steps.check-suspended.outputs.result}} == active"
         - - name: check-system-pods
             template: check-system-pods
+            when: "{{steps.check-suspended.outputs.result}} == active"
         - - name: check-argocd-apps
             template: check-argocd-apps
+            when: "{{steps.check-suspended.outputs.result}} == active"
         - - name: post-summary
             template: post-slack-summary
+            when: "{{steps.check-suspended.outputs.result}} == active"
             arguments:
               parameters:
                 - name: nodes_result
@@ -261,6 +267,34 @@ spec:
                   value: "{{steps.check-system-pods.outputs.result}}"
                 - name: argocd_result
                   value: "{{steps.check-argocd-apps.outputs.result}}"
+
+    # Reads SSM parameter written by the suspend Lambda. Returns "suspended" or "active".
+    # Exits 0 in either case — downstream steps gate on the output value.
+    - name: check-suspended
+      script:
+        image: amazon/aws-cli:latest
+        command: [bash]
+        source: |
+          CLUSTER=$(kubectl config current-context 2>/dev/null || echo "unknown")
+          STATE=$(aws ssm get-parameter \
+            --name "/cluster-suspend/${CLUSTER}/state" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "active")
+          if [[ "$STATE" == "suspended" ]]; then
+            echo "Cluster is suspended — skipping health check" >&2
+          fi
+          echo "$STATE"
+        env:
+          - name: AWS_DEFAULT_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: aws-region
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
 
     - name: check-nodes
       script:
@@ -299,13 +333,10 @@ spec:
         image: bitnami/kubectl:latest
         command: [bash]
         source: |
-          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
-          PF_PID=$!
-          sleep 5
-
           ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
             -o jsonpath="{.data.password}" | base64 -d)
-          argocd login localhost:8080 --username admin --password "$ARGOCD_PASS" --insecure
+          argocd login argocd-server.argocd.svc.cluster.local \
+            --username admin --password "$ARGOCD_PASS" --insecure --grpc-web
 
           UNHEALTHY=0
           while IFS= read -r line; do
@@ -321,7 +352,6 @@ spec:
           if [[ "$UNHEALTHY" -eq 0 ]]; then
             echo "OK: all ArgoCD apps Healthy and Synced"
           fi
-          kill $PF_PID 2>/dev/null || true
 
     - name: post-slack-summary
       inputs:

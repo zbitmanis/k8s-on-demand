@@ -1,0 +1,152 @@
+# Composition — fulfils an IAMRoleClaim by creating:
+#   1. An IAM role with a trust policy scoped to the tenant's namespace SA
+#      via the EKS OIDC provider (IRSA)
+#   2. An IAM policy scoped to the tenant's Secrets Manager prefix
+#   3. An IAM policy attachment binding the policy to the role
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: tenant-iam-role
+  labels:
+    platform.example.com/composition: tenant-iam-role
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.com/v1alpha1
+    kind: TenantIAMRole
+
+  mode: Pipeline
+
+  pipeline:
+    - step: create-iam-role
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+
+          - name: iam-role
+            base:
+              apiVersion: iam.aws.upbound.io/v1beta1
+              kind: Role
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  tags:
+                    managed-by: crossplane
+                    platform: k8s-on-demand
+                  assumeRolePolicy: ""   # patched via CombineFromComposite
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.tenantId
+                toFieldPath: metadata.annotations[crossplane.io/external-name]
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "tenant-%s-irsa"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.tenantId
+                toFieldPath: spec.forProvider.tags[tenant]
+              # Build the IRSA trust policy from OIDC provider URL + tenant namespace SA
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.parameters.oidcProviderArn
+                    - fromFieldPath: spec.parameters.oidcProviderUrl
+                    - fromFieldPath: spec.parameters.tenantId
+                    - fromFieldPath: spec.parameters.serviceAccountName
+                    - fromFieldPath: spec.parameters.oidcProviderUrl
+                    - fromFieldPath: spec.parameters.tenantId
+                    - fromFieldPath: spec.parameters.serviceAccountName
+                  strategy: string
+                  string:
+                    fmt: |
+                      {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                          "Effect": "Allow",
+                          "Principal": { "Federated": "%s" },
+                          "Action": "sts:AssumeRoleWithWebIdentity",
+                          "Condition": {
+                            "StringEquals": {
+                              "%s:aud": "sts.amazonaws.com",
+                              "%s:sub": "system:serviceaccount:%s:%s"
+                            }
+                          }
+                        }]
+                      }
+                toFieldPath: spec.forProvider.assumeRolePolicy
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.arn
+                toFieldPath: status.roleArn
+              - type: ToCompositeFieldPath
+                fromFieldPath: metadata.annotations[crossplane.io/external-name]
+                toFieldPath: status.roleName
+
+          - name: iam-policy
+            base:
+              apiVersion: iam.aws.upbound.io/v1beta1
+              kind: Policy
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  policy: ""   # patched below
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.tenantId
+                toFieldPath: metadata.annotations[crossplane.io/external-name]
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "tenant-%s-policy"
+              # Scope Secrets Manager access to the tenant prefix only
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: spec.parameters.tenantId
+                    - fromFieldPath: spec.parameters.tenantId
+                  strategy: string
+                  string:
+                    fmt: |
+                      {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                          {
+                            "Sid": "SecretsManagerTenantPrefix",
+                            "Effect": "Allow",
+                            "Action": [
+                              "secretsmanager:GetSecretValue",
+                              "secretsmanager:DescribeSecret"
+                            ],
+                            "Resource": "arn:aws:secretsmanager:*:*:secret:/%s/*"
+                          },
+                          {
+                            "Sid": "S3TenantBucket",
+                            "Effect": "Allow",
+                            "Action": [
+                              "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                              "s3:ListBucket"
+                            ],
+                            "Resource": [
+                              "arn:aws:s3:::%s-data",
+                              "arn:aws:s3:::%s-data/*"
+                            ]
+                          }
+                        ]
+                      }
+                toFieldPath: spec.forProvider.policy
+
+          - name: iam-policy-attachment
+            base:
+              apiVersion: iam.aws.upbound.io/v1beta1
+              kind: RolePolicyAttachment
+              spec:
+                providerConfigRef:
+                  name: default
+                forProvider:
+                  roleSelector:
+                    matchControllerRef: true
+                  policyArnSelector:
+                    matchControllerRef: true

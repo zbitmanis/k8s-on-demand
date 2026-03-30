@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform-rbac
+description: Platform RBAC — service accounts, roles, and runtime secrets for Argo Workflows and Events
+type: application
+version: 0.1.0

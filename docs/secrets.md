@@ -30,6 +30,33 @@ Tenant secrets live under `/<tenant-id>/`.
 IRSA policies enforce that each tenant role can only access its own prefix.
 See [iam-conventions.md](iam-conventions.md) for the IAM policy details.
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+rectangle "AWS Secrets Manager" {
+  rectangle "Platform Secrets (/platform/*)" {
+    component "github-token"
+    component "argocd-token"
+    component "slack-webhook"
+  }
+  rectangle "Tenant Secrets (/<tenant-id>/*)" {
+    component "database/postgres-password"
+    component "app/api-key"
+    component "registry/pull-secret"
+  }
+}
+
+component "platform-argo-workflow-runner\nIAM Role" as platform_role
+component "tenant-<id>-external-secrets\nIAM Role" as tenant_role
+
+platform_role -.->|can access| "Platform Secrets (/platform/*)"
+tenant_role -.->|can access| "Tenant Secrets (/<tenant-id>/*)"
+
+@enduml
+```
+
 ## Delivery to Pods — External Secrets Operator
 
 External Secrets Operator (ESO) runs as a system app in each tenant cluster.
@@ -59,9 +86,33 @@ spec:
         version: AWSCURRENT          # Always pull latest version
 ```
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+participant "ESO Controller" as eso
+participant "AWS Secrets Manager" as secretsmgr
+participant "Kubernetes Secret" as k8s_secret
+participant "Pod" as pod
+
+loop refresh cycle (e.g. 1h)
+  eso -> eso: Watch ExternalSecret CR\nin tenant namespace
+  eso -> secretsmgr: Authenticate via ClusterSecretStore\n(IRSA with tenant role)
+  secretsmgr -> secretsmgr: Verify pod identity\nmatches role's namespace:sa condition
+  eso <- secretsmgr: Fetch secret value\nfrom /tenant-id/component/name
+  eso -> k8s_secret: Create/update Kubernetes Secret\nin tenant namespace
+end
+
+pod -> k8s_secret: Mount Secret as env var\nor volume
+k8s_secret -> pod: Provide secret data
+
+@enduml
+```
+
 ### ClusterSecretStore
 
-One `ClusterSecretStore` is configured per tenant cluster, using the tenant’s IRSA role:
+One `ClusterSecretStore` is configured per tenant cluster, using the tenant's IRSA role:
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
@@ -100,7 +151,7 @@ metadata:
      --secret-string '{"api_key":"<value>"}' \
      --region eu-west-1
    ```
-2. Create an `ExternalSecret` manifest in the tenant’s Kubernetes namespace:
+2. Create an `ExternalSecret` manifest in the tenant's Kubernetes namespace:
 
    ```yaml
    # tenants/acme-corp/argocd/secrets.yaml

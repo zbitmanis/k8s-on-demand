@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam rectangleBorderColor #666666
+skinparam componentBorderColor #666666
+
+rectangle "Management Plane" {
+  component "Argo Events\n(triggers)" as events #LightBlue
+  component "Argo Workflows\n(orchestration)" as workflows #LightBlue
+  component "ArgoCD\n(GitOps)" as argocd #LightGreen
+  component "Crossplane\n(Day 1 resources)" as crossplane #LightSalmon
+  component "GitHub Actions\n(Terraform - one-time)" as gha #LightYellow
+  component "Thanos\n(aggregator)" as thanos #LightCoral
+  component "Prometheus\n(single instance)" as prom #LightCoral
+}
+
+events --> workflows : trigger
+workflows --> gha : cluster setup only
+prom --> thanos : remote write / sidecar
+argocd --> crossplane : sync Compositions
+
+rectangle "Shared EKS Cluster" as cluster #E8F5E9 {
+  rectangle "System Node Group\n(tainted)" as sys_nodes {
+    component "ArgoCD agent" as aa
+    component "System apps\n(ESO, Prometheus, Nginx, Gatekeeper)" as sys_apps
+  }
+
+  rectangle "Workload Node Group" as work_nodes {
+    component "Tenant A\nNamespace" as ta
+    component "Tenant B\nNamespace" as tb
+    component "Tenant N\nNamespace" as tn
+  }
+}
+
+argocd --> sys_apps : deploy once
+argocd --> ta : ApplicationSet → apps
+argocd --> tb : ApplicationSet → apps
+argocd --> tn : ApplicationSet → apps
+
+ta --> prom : metrics
+tb --> prom : metrics
+tn --> prom : metrics
+
+cluster --> thanos : Thanos sidecar (from Prometheus)
+
+component "AWS API\n(S3, IAM, RDS, SQS)" as aws_api #LightGray
+crossplane --> aws_api : manage resources via Provider
+@enduml

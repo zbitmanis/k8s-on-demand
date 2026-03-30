@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-system
+  namespace: argocd
+  # Not managed by ArgoCD itself (chicken-and-egg).
+  # Applied by provision-cluster.yaml bootstrap-argocd job before the App-of-Apps.
+spec:
+  description: Platform system applications — cluster infrastructure and shared services
+  sourceRepos:
+    - "*"
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  roles:
+    - name: admin
+      description: Platform team admin access
+      policies:
+        - p, proj:platform-system:admin, applications, *, platform-system/*, allow

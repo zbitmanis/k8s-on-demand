@@ -114,3 +114,159 @@ spec:
 
   template:
     serviceAccountName: argo-events-sensor
+
+---
+# Sensor: graceful suspend — webhook → cluster-suspend WorkflowTemplate (action=suspend)
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: cluster-suspend-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: suspend-request
+      eventSourceName: webhook-source
+      eventName: suspend-cluster
+
+  triggers:
+    - template:
+        name: submit-suspend-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: cluster-suspend-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: cluster-suspend
+                arguments:
+                  parameters:
+                    - name: action
+                      value: suspend
+                    - name: drain_timeout_sec
+                      value: "120"
+          parameters:
+            - src:
+                dependencyName: suspend-request
+                dataKey: body.drain_timeout_sec
+                value: "120"   # default if not provided in payload
+              dest: spec.arguments.parameters.1.value
+
+  template:
+    serviceAccountName: argo-events-sensor
+
+---
+# Sensor: graceful resume — webhook → cluster-suspend WorkflowTemplate (action=resume)
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: cluster-resume-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: resume-request
+      eventSourceName: webhook-source
+      eventName: resume-cluster
+
+  triggers:
+    - template:
+        name: submit-resume-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: cluster-resume-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: cluster-suspend
+                arguments:
+                  parameters:
+                    - name: action
+                      value: resume
+
+  template:
+    serviceAccountName: argo-events-sensor
+
+---
+# Sensor: scheduled graceful suspend — calendar → cluster-suspend WorkflowTemplate (action=suspend)
+# Drains tenants + sends Slack notification + leaves Argo Workflow audit trail
+# EventBridge also triggers the Lambda directly on the same schedule (hard path, no drain)
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: scheduled-suspend-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: suspend-tick
+      eventSourceName: calendar-source
+      eventName: cluster-suspend-schedule
+
+  triggers:
+    - template:
+        name: submit-scheduled-suspend
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: cluster-scheduled-suspend-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: cluster-suspend
+                arguments:
+                  parameters:
+                    - name: action
+                      value: suspend
+                    - name: drain_timeout_sec
+                      value: "60"
+
+  template:
+    serviceAccountName: argo-events-sensor
+
+---
+# Sensor: scheduled resume — calendar → cluster-suspend WorkflowTemplate (action=resume)
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: scheduled-resume-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: resume-tick
+      eventSourceName: calendar-source
+      eventName: cluster-resume-schedule
+
+  triggers:
+    - template:
+        name: submit-scheduled-resume
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: cluster-scheduled-resume-
+                namespace: argo
+              spec:
+                workflowTemplateRef:
+                  name: cluster-suspend
+                arguments:
+                  parameters:
+                    - name: action
+                      value: resume
+
+  template:
+    serviceAccountName: argo-events-sensor
