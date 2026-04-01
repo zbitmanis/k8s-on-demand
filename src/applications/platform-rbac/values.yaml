@@ -1,0 +1,7 @@
+# Injected at deploy time by provision-cluster.yaml via argocd app set --helm-set
+workflowRunnerRoleArn: ""
+awsRegion: ""
+suspendLambdaName: ""
+github:
+  org: ""
+  repo: "k8s-on-demand"

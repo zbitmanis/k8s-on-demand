@@ -1,0 +1,415 @@
+---
+# Graceful cluster suspend — drains tenant workloads, notifies, then invokes
+# the suspend Lambda to scale all EKS node groups to 0.
+#
+# Triggered by:
+#   - Argo Events sensor (webhook /suspend-cluster or /resume-cluster)
+#   - Manual: argo submit --from workflowtemplate/cluster-suspend -p action=suspend
+#
+# Hard-suspend (no drain) is handled directly by EventBridge → Lambda.
+# This template is for the managed, graceful path.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cluster-suspend
+  namespace: argo
+  annotations:
+    platform.io/category: lifecycle
+    platform.io/doc: "Graceful cluster suspend/resume with tenant drain"
+spec:
+  entrypoint: suspend-flow
+  serviceAccountName: argo-workflow-runner
+
+  arguments:
+    parameters:
+      - name: action
+        value: suspend          # suspend | resume
+      - name: drain_timeout_sec
+        value: "120"            # seconds to wait for pods to terminate
+      - name: scripts_image
+        value: "platform-scripts:latest"
+
+  templates:
+
+    # ── Top-level DAG ──────────────────────────────────────────────────────────
+    - name: suspend-flow
+      inputs:
+        parameters:
+          - name: action
+          - name: drain_timeout_sec
+          - name: scripts_image
+      steps:
+        - - name: route
+            template: route-action
+            arguments:
+              parameters:
+                - name: action
+                  value: "{{inputs.parameters.action}}"
+                - name: drain_timeout_sec
+                  value: "{{inputs.parameters.drain_timeout_sec}}"
+                - name: scripts_image
+                  value: "{{inputs.parameters.scripts_image}}"
+
+    # ── Route suspend vs resume ────────────────────────────────────────────────
+    - name: route-action
+      inputs:
+        parameters:
+          - name: action
+          - name: drain_timeout_sec
+          - name: scripts_image
+      steps:
+        - - name: do-suspend
+            template: suspend-steps
+            when: "\"{{inputs.parameters.action}}\" == \"suspend\""
+            arguments:
+              parameters:
+                - name: drain_timeout_sec
+                  value: "{{inputs.parameters.drain_timeout_sec}}"
+                - name: scripts_image
+                  value: "{{inputs.parameters.scripts_image}}"
+
+          - name: do-resume
+            template: resume-steps
+            when: "\"{{inputs.parameters.action}}\" == \"resume\""
+            arguments:
+              parameters:
+                - name: scripts_image
+                  value: "{{inputs.parameters.scripts_image}}"
+
+    # ── Suspend steps (ordered) ────────────────────────────────────────────────
+    - name: suspend-steps
+      inputs:
+        parameters:
+          - name: drain_timeout_sec
+          - name: scripts_image
+      steps:
+        - - name: notify-suspend-start
+            template: notify-slack
+            arguments:
+              parameters:
+                - name: message
+                  value: ":zzz: *Cluster suspend initiated* — draining tenant workloads (timeout: {{inputs.parameters.drain_timeout_sec}}s)"
+
+        - - name: pause-argocd-sync
+            template: argocd-toggle-sync
+            arguments:
+              parameters:
+                - name: enabled
+                  value: "false"
+
+        - - name: drain-tenant-workloads
+            template: drain-tenants
+            arguments:
+              parameters:
+                - name: drain_timeout_sec
+                  value: "{{inputs.parameters.drain_timeout_sec}}"
+                - name: scripts_image
+                  value: "{{inputs.parameters.scripts_image}}"
+
+        - - name: invoke-lambda-suspend
+            template: invoke-suspend-lambda
+            arguments:
+              parameters:
+                - name: action
+                  value: suspend
+
+        - - name: notify-suspend-done
+            template: notify-slack
+            arguments:
+              parameters:
+                - name: message
+                  value: ":white_check_mark: *Cluster suspended* — all node groups scaled to 0. Resume with: `argo submit --from workflowtemplate/cluster-suspend -p action=resume`"
+
+    # ── Resume steps (ordered) ─────────────────────────────────────────────────
+    - name: resume-steps
+      inputs:
+        parameters:
+          - name: scripts_image
+      steps:
+        - - name: notify-resume-start
+            template: notify-slack
+            arguments:
+              parameters:
+                - name: message
+                  value: ":sunrise: *Cluster resume initiated* — restoring node groups..."
+
+        - - name: invoke-lambda-resume
+            template: invoke-suspend-lambda
+            arguments:
+              parameters:
+                - name: action
+                  value: resume
+
+        - - name: wait-for-nodes
+            template: wait-nodes-ready
+
+        - - name: resume-argocd-sync
+            template: argocd-toggle-sync
+            arguments:
+              parameters:
+                - name: enabled
+                  value: "true"
+
+        - - name: wait-for-argocd
+            template: wait-argocd-healthy
+
+        - - name: notify-resume-done
+            template: notify-slack
+            arguments:
+              parameters:
+                - name: message
+                  value: ":white_check_mark: *Cluster resumed* — nodes ready, ArgoCD syncing tenant workloads."
+
+    # ── Template: drain all tenant namespaces ──────────────────────────────────
+    - name: drain-tenants
+      inputs:
+        parameters:
+          - name: drain_timeout_sec
+          - name: scripts_image
+      script:
+        image: "{{inputs.parameters.scripts_image}}"
+        command: [python]
+        source: |
+          import subprocess, sys, json, time
+
+          drain_timeout = int("{{inputs.parameters.drain_timeout_sec}}")
+
+          # Discover tenant namespaces by label
+          result = subprocess.run(
+              ["kubectl", "get", "namespaces",
+               "-l", "platform.io/tenant=true",
+               "-o", "jsonpath={.items[*].metadata.name}"],
+              capture_output=True, text=True, check=True,
+          )
+          namespaces = result.stdout.split()
+
+          if not namespaces:
+              print("No tenant namespaces found — nothing to drain")
+              sys.exit(0)
+
+          print(f"Draining {len(namespaces)} tenant namespace(s): {namespaces}")
+
+          for ns in namespaces:
+              print(f"  Scaling down Deployments in {ns}...")
+              subprocess.run(
+                  ["kubectl", "scale", "deployment", "--all",
+                   "--replicas=0", "-n", ns],
+                  check=False,
+              )
+              subprocess.run(
+                  ["kubectl", "scale", "statefulset", "--all",
+                   "--replicas=0", "-n", ns],
+                  check=False,
+              )
+
+          # Wait for pods to terminate
+          print(f"Waiting up to {drain_timeout}s for tenant pods to terminate...")
+          deadline = time.time() + drain_timeout
+          while time.time() < deadline:
+              remaining = []
+              for ns in namespaces:
+                  r = subprocess.run(
+                      ["kubectl", "get", "pods", "-n", ns,
+                       "--field-selector=status.phase=Running",
+                       "--no-headers"],
+                      capture_output=True, text=True,
+                  )
+                  if r.stdout.strip():
+                      remaining.append(ns)
+              if not remaining:
+                  print("All tenant pods terminated.")
+                  sys.exit(0)
+              print(f"  Still running in: {remaining} — waiting...")
+              time.sleep(10)
+
+          print(f"WARNING: pods still running after {drain_timeout}s — proceeding anyway")
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+    # ── Template: invoke suspend Lambda via AWS CLI ────────────────────────────
+    - name: invoke-suspend-lambda
+      inputs:
+        parameters:
+          - name: action    # suspend | resume
+      script:
+        image: amazon/aws-cli:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          FUNCTION_NAME="${SUSPEND_LAMBDA_NAME}"
+          ACTION="{{inputs.parameters.action}}"
+          REGION="${AWS_REGION}"
+
+          echo "Invoking $FUNCTION_NAME with action=$ACTION in $REGION..."
+
+          OUTPUT=$(aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --payload "{\"action\": \"$ACTION\"}" \
+            --cli-binary-format raw-in-base64-out \
+            --region "$REGION" \
+            /tmp/lambda-response.json 2>&1)
+
+          echo "Invocation output: $OUTPUT"
+          echo "Lambda response:"
+          cat /tmp/lambda-response.json
+
+          # Fail if Lambda returned an error payload
+          if grep -q '"errorMessage"' /tmp/lambda-response.json; then
+            echo "Lambda returned an error!"
+            exit 1
+          fi
+        env:
+          - name: AWS_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: aws-region
+          - name: SUSPEND_LAMBDA_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: platform-config
+                key: suspend-lambda-name
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+    # ── Template: wait for at least 1 node Ready ──────────────────────────────
+    - name: wait-nodes-ready
+      script:
+        image: bitnami/kubectl:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+          echo "Waiting for nodes to become Ready (up to 15 minutes)..."
+          TIMEOUT=900
+          ELAPSED=0
+          while [[ $ELAPSED -lt $TIMEOUT ]]; do
+            READY=$(kubectl get nodes --no-headers 2>/dev/null \
+              | grep " Ready" | wc -l | tr -d ' ')
+            if [[ "$READY" -gt 0 ]]; then
+              echo "OK: $READY node(s) Ready"
+              exit 0
+            fi
+            echo "  No nodes ready yet (${ELAPSED}s elapsed)..."
+            sleep 30
+            ELAPSED=$(( ELAPSED + 30 ))
+          done
+          echo "ERROR: no nodes became Ready within ${TIMEOUT}s"
+          exit 1
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+
+    # ── Template: toggle ArgoCD auto-sync ─────────────────────────────────────
+    - name: argocd-toggle-sync
+      inputs:
+        parameters:
+          - name: enabled   # "true" | "false"
+      script:
+        image: argoproj/argocd:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+          ENABLED="{{inputs.parameters.enabled}}"
+
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+          argocd login argocd-server.argocd.svc.cluster.local \
+            --username admin --password "$ARGOCD_PASS" --insecure --grpc-web
+
+          if [[ "$ENABLED" == "false" ]]; then
+            echo "Disabling auto-sync on all apps..."
+            for app in $(argocd app list -o name); do
+              argocd app set "$app" --sync-policy none || true
+            done
+          else
+            echo "Enabling auto-sync on all apps..."
+            for app in $(argocd app list -o name); do
+              argocd app set "$app" --sync-policy automated \
+                --auto-prune --self-heal || true
+            done
+          fi
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+    # ── Template: wait for ArgoCD apps Healthy + Synced ───────────────────────
+    - name: wait-argocd-healthy
+      script:
+        image: argoproj/argocd:latest
+        command: [bash]
+        source: |
+          set -euo pipefail
+          ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d)
+          argocd login argocd-server.argocd.svc.cluster.local \
+            --username admin --password "$ARGOCD_PASS" --insecure --grpc-web
+
+          TIMEOUT=600
+          ELAPSED=0
+          while [[ $ELAPSED -lt $TIMEOUT ]]; do
+            UNHEALTHY=$(argocd app list --output wide --no-headers 2>/dev/null \
+              | awk '{print $7,$6}' | grep -v "Healthy Synced" | wc -l | tr -d ' ')
+            if [[ "$UNHEALTHY" -eq 0 ]]; then
+              echo "OK: all ArgoCD apps Healthy and Synced"
+              exit 0
+            fi
+            echo "  $UNHEALTHY app(s) not yet Healthy/Synced (${ELAPSED}s)..."
+            sleep 30
+            ELAPSED=$(( ELAPSED + 30 ))
+          done
+          echo "WARNING: some apps not Healthy after ${TIMEOUT}s — check ArgoCD"
+          exit 0  # non-fatal — resume is still complete
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+
+    # ── Template: Slack notification ───────────────────────────────────────────
+    - name: notify-slack
+      inputs:
+        parameters:
+          - name: message
+      script:
+        image: python:3.12-slim
+        command: [python]
+        source: |
+          import json, os, urllib.request
+          webhook = os.environ["SLACK_WEBHOOK_URL"]
+          msg     = """{{inputs.parameters.message}}"""
+          payload = {"text": msg}
+          data    = json.dumps(payload).encode()
+          req     = urllib.request.Request(
+              webhook, data=data,
+              headers={"Content-Type": "application/json"}, method="POST",
+          )
+          urllib.request.urlopen(req, timeout=10)
+          print(f"Notified Slack: {msg}")
+        env:
+          - name: SLACK_WEBHOOK_URL
+            valueFrom:
+              secretKeyRef:
+                name: platform-slack
+                key: webhook-url
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi

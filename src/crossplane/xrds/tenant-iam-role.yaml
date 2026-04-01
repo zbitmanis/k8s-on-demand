@@ -1,0 +1,64 @@
+# XRD — defines the TenantIAMRole composite resource.
+# Creates a scoped IRSA role for a tenant namespace service account.
+# The role trust policy is restricted to the tenant's namespace SA,
+# and the permissions policy is limited to the tenant's resource prefix.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: tenantiamroles.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    kind: TenantIAMRole
+    plural: tenantiamroles
+  claimNames:
+    kind: IAMRoleClaim
+    plural: iamroleclaims
+
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - parameters
+              properties:
+                parameters:
+                  type: object
+                  required:
+                    - tenantId
+                    - serviceAccountName
+                    - oidcProviderArn
+                    - oidcProviderUrl
+                  properties:
+                    tenantId:
+                      type: string
+                      description: Tenant identifier.
+                    serviceAccountName:
+                      type: string
+                      description: Kubernetes service account name in the tenant namespace.
+                    oidcProviderArn:
+                      type: string
+                      description: ARN of the EKS cluster OIDC provider.
+                    oidcProviderUrl:
+                      type: string
+                      description: URL of the EKS cluster OIDC provider (without https://).
+                    secretsPrefix:
+                      type: string
+                      description: |
+                        AWS Secrets Manager prefix this role can access.
+                        Defaults to /<tenantId>/
+            status:
+              type: object
+              properties:
+                roleArn:
+                  type: string
+                  description: ARN of the provisioned IAM role.
+                roleName:
+                  type: string
+                  description: Name of the provisioned IAM role.

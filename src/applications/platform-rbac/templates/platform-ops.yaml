@@ -1,0 +1,117 @@
+---
+# ClusterRole for platform engineers accessing the dev/sandbox cluster via
+# Google Workspace SSO (saml2aws → sts:AssumeRoleWithSAML → platform-ops-cluster-access).
+#
+# The EKS Access Entry maps platform-ops-cluster-access to kubernetes_groups:
+# ["platform:ops"]. This ClusterRoleBinding grants that group read access
+# across the cluster plus exec into pods for live debugging.
+#
+# Intentionally no write access to workload resources — changes go through
+# ArgoCD / Argo Workflows. The one exception is pods/exec for debugging.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-ops
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  # Read all core resources cluster-wide
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - namespaces
+      - pods
+      - pods/log
+      - pods/status
+      - services
+      - endpoints
+      - configmaps
+      - events
+      - persistentvolumes
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+
+  # Exec into pods and port-forward for live debugging
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+      - pods/portforward
+    verbs: ["create", "get"]
+
+  # Read Deployments, StatefulSets, DaemonSets, ReplicaSets
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list", "watch"]
+
+  # Read Jobs and CronJobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+
+  # Read Argo resources (observe without modifying — ArgoCD owns reconciliation)
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - workflows
+      - workflowtemplates
+      - cronworkflows
+      - applications
+      - appprojects
+      - eventsources
+      - sensors
+    verbs: ["get", "list", "watch"]
+
+  # Read networking resources
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # Read HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+
+  # Read storage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+
+  # Read Gatekeeper constraints and violations (policy audit)
+  - apiGroups: ["constraints.gatekeeper.sh", "templates.gatekeeper.sh"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # Read External Secrets (observe sync status, not secret values)
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets", "clustersecretstores", "secretstores"]
+    verbs: ["get", "list", "watch"]
+
+  # Read RBAC (audit who has access to what)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+      - clusterrolebindings
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-ops
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+subjects:
+  - kind: Group
+    name: "platform:ops"   # matches kubernetes_groups in EKS Access Entry
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: platform-ops
+  apiGroup: rbac.authorization.k8s.io

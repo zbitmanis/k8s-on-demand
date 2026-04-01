@@ -88,3 +88,15 @@ variable "artifacts_bucket_name" {
   type        = string
   description = "S3 bucket for Argo Workflow artifacts"
 }
+
+variable "google_saml_metadata_xml" {
+  type        = string
+  sensitive   = true
+  description = "Google Workspace SAML IdP metadata XML. Set via GitHub Actions secret GOOGLE_SAML_METADATA_XML passed as TF_VAR_google_saml_metadata_xml."
+}
+
+variable "google_workspace_domain" {
+  type        = string
+  description = "Google Workspace hosted domain for SAML hd condition (e.g. company.com)"
+  default     = ""
+}

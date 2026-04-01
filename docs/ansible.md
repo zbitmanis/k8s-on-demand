@@ -8,6 +8,42 @@ It is invoked by GitHub Actions as part of the provisioning pipeline.
 
 Ansible does NOT manage Kubernetes resources — that is ArgoCD’s responsibility.
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam componentBorderColor #666666
+
+component "GitHub Actions\n(trigger)" as gha #LightYellow
+component "Ansible Controller\n(playbook executor)" as ansible #LightBlue
+component "AWS SSM\n(ProxyCommand tunnel)" as ssm #LightCyan
+component "EC2 Node\n(target host)" as ec2 #LightGreen
+
+gha --> ansible : runs ansible-playbook\nsite.yml
+ansible --> ssm : aws ssm start-session
+ssm --> ec2 : secure connection
+
+rectangle "EC2 Node Roles" {
+  component "role_prepare_node" as r1
+  component "os_hardening" as r2
+  component "container_runtime" as r3
+  component "eks_bootstrap" as r4
+  component "node_labels" as r5
+}
+
+ec2 --> r1
+ec2 --> r2
+ec2 --> r3
+ec2 --> r4
+ec2 --> r5
+
+component "EKS API Server\n(node registration)" as eks #LightGreen
+r4 --> eks : kubelet joins cluster
+r5 --> eks : label + taint reconciliation
+
+@enduml
+```
+
 ## Directory Structure
 
 ```
@@ -182,6 +218,36 @@ Applied during tenant onboarding. Runs all roles in sequence:
     - node_labels             # roles — label/taint reconciliation post-join
   tags:
     - monitoring
+```
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+|Play: Prepare|
+start
+:role_prepare_node (Galaxy);
+note right: chrony, base packages, users, dirs
+:os_hardening (local);
+note right: CIS hardening, SSH, PAM
+
+|Play: Container Runtime|
+:container_runtime (local);
+note right: containerd config, registry mirrors
+
+|Play: EKS Bootstrap|
+:eks_bootstrap (local);
+note right: kubelet flags, node-labels, taints
+
+|Play: Monitoring & Labels|
+:role_prepare_node (Galaxy);
+note right: node_exporter if included
+:node_labels (local);
+note right: label/taint reconciliation post-join
+stop
+
+@enduml
 ```
 
 ### `hardening.yml` — Compliance Re-run

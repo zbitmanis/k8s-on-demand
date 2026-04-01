@@ -23,6 +23,34 @@ src/terraform/
 └── cluster.tfvars            # Cluster-level configuration (NOT per-tenant)
 ```
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam componentBorderColor #666666
+skinparam rectangleBorderColor #666666
+
+component "VPC\n(subnets, NAT, IGW)" as vpc #LightBlue
+component "IAM\n(OIDC, node roles)" as iam #LightBlue
+component "EKS Cluster\n(control plane + node groups)" as eks #LightGreen
+component "EKS Add-ons\n(CoreDNS, kube-proxy, VPC CNI, EBS CSI)" as addons #LightGreen
+component "Networking\n(SecurityGroups, NACLs)" as networking #LightBlue
+
+vpc --> eks : provides subnets
+iam --> eks : creates OIDC provider
+eks --> addons : control plane
+vpc --> networking : configures SG/NACL
+
+database "Terraform State\n(S3 + DynamoDB)" as state #LightYellow
+vpc --> state
+iam --> state
+eks --> state
+addons --> state
+networking --> state
+
+@enduml
+```
+
 ## Key Change: No Per-Tenant Terraform
 
 In the old model, each tenant got a `tenants/<tenant-id>/terraform.tfvars` file with cluster-specific config.
@@ -54,6 +82,39 @@ terraform {
 ```
 
 There are **no per-tenant state files** because there is no per-tenant infrastructure.
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+|Developer|
+start
+:Developer opens PR\nwith Terraform changes;
+
+|GitHub Actions|
+:Run tf-reviewer\n(syntax check);
+:Run terraform plan\n(output to file);
+
+|PR Reviewer|
+:tf-plan-reviewer posts\nplan summary comment;
+
+|Developer / Approver|
+:Review plan output;
+:Approve and merge to main;
+
+|GitHub Actions|
+:Assume OIDC role\n(terraform-execution);
+:Run terraform apply;
+:State written to S3\n+ DynamoDB lock released;
+:Post apply summary\nto commit;
+
+|Cluster|
+:Resources updated\n(VPC, EKS, IAM, add-ons);
+stop
+
+@enduml
+```
 
 ### State Bucket Policy
 

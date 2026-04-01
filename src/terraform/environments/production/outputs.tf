@@ -33,3 +33,13 @@ output "tenant_role_arns" {
   description = "Map of tenant ID to their IRSA role ARNs"
   value       = module.iam_tenant_roles.tenant_role_arns
 }
+
+output "workflow_runner_role_arn" {
+  description = "IRSA role ARN for Argo Workflow runner pods"
+  value       = module.iam_management.workflow_runner_role_arn
+}
+
+output "suspend_lambda_name" {
+  description = "Name of the cluster-suspend Lambda function"
+  value       = module.suspend_lambda.lambda_function_name
+}

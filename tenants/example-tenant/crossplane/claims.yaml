@@ -1,0 +1,41 @@
+# Crossplane resource claims for tenant: example-tenant
+# These are submitted to the tenant's namespace and fulfilled by
+# platform Compositions — no direct AWS API calls from this file.
+#
+# Managed by: ArgoCD via tenants/example-tenant/argocd/apps.yaml
+---
+# IRSA role — created first so its ARN can be referenced by the bucket claim
+apiVersion: platform.example.com/v1alpha1
+kind: IAMRoleClaim
+metadata:
+  name: example-tenant-irsa
+  namespace: example-tenant
+spec:
+  compositionSelector:
+    matchLabels:
+      platform.example.com/composition: tenant-iam-role
+  parameters:
+    tenantId: example-tenant
+    serviceAccountName: example-tenant-workload
+    oidcProviderArn: arn:aws:iam::<account-id>:oidc-provider/oidc.eks.eu-west-1.amazonaws.com/id/<oidc-id>
+    oidcProviderUrl: oidc.eks.eu-west-1.amazonaws.com/id/<oidc-id>
+    secretsPrefix: /example-tenant/
+---
+# S3 bucket — tenant data bucket, access granted to the IRSA role above
+apiVersion: platform.example.com/v1alpha1
+kind: BucketClaim
+metadata:
+  name: example-tenant-data
+  namespace: example-tenant
+spec:
+  compositionSelector:
+    matchLabels:
+      platform.example.com/composition: tenant-bucket
+  parameters:
+    tenantId: example-tenant
+    region: eu-west-1
+    versioning: true
+    lifecycleDays: 90
+    # irsaRoleArn is patched in by the onboarding workflow after the
+    # IAMRoleClaim above becomes Ready and its status.roleArn is available.
+    irsaRoleArn: ""

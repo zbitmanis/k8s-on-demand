@@ -1,0 +1,18 @@
+# Namespaces excluded from policy enforcement (system namespaces)
+excludedNamespaces:
+  - kube-system
+  - kube-public
+  - kube-node-lease
+  - argocd
+  - argo
+  - argo-events
+  - cert-manager
+  - external-secrets
+  - gatekeeper-system
+  - ingress-nginx
+  - aws
+  - monitoring
+  - crossplane-system
+
+# Set to "deny" once policies have been validated in "warn" mode
+enforceAction: warn
