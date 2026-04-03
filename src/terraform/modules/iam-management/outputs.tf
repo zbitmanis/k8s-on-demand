@@ -1,6 +1,6 @@
 output "github_oidc_provider_arn" {
   description = "ARN of the GitHub Actions OIDC provider"
-  value       = aws_iam_openid_connect_provider.github_actions.arn
+  value       = data.aws_iam_openid_connect_provider.github_actions.arn
 }
 
 output "terraform_execution_role_arn" {
