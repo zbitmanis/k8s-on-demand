@@ -6,6 +6,15 @@ Each tenant receives a dedicated namespace with enforced isolation via RBAC, Net
 ResourceQuotas, and Gatekeeper admission policies. The platform manages the full lifecycle:
 cluster provisioning, tenant onboarding, workload delivery, monitoring, and offboarding.
 
+## Cluster Purpose — On-Demand Sandbox / Dev
+
+**This is not a production cluster.** The cluster is on-demand and sandbox/dev-grade:
+
+- **Lifecycle:** provisioned when work begins, fully destroyed when idle (`terraform destroy`)
+- **Not always-on:** cold start ~20-30 min; no hibernate or scale-to-zero needed
+- **Friction level:** pipelines use lean `workflow_dispatch` inputs with no reviewer gates or environment protection rules
+- **Recovery:** all tenant config lives in Git (`tenants/`) — fully recoverable on reprovision
+
 ## Isolation Model
 
 **Single shared EKS cluster — tenant isolation per namespace.**

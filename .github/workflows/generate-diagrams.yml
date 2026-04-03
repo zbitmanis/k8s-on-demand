@@ -38,6 +38,9 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" ]]; then
             FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
               | grep '\.puml$' | tr '\n' ' ')
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # On manual trigger always render all diagrams (force=true is the default intent)
+            FILES=$(find docs -name '*.puml' | tr '\n' ' ')
           else
             FILES=$(git diff --name-only origin/${{ github.base_ref }} HEAD \
               | grep '\.puml$' | tr '\n' ' ')
@@ -68,7 +71,7 @@ jobs:
           fi
 
       - name: Commit updated SVGs
-        if: steps.diff.outputs.changed == 'true' && github.event_name == 'push'
+        if: steps.diff.outputs.changed == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -1,13 +1,13 @@
 variable "region" {
   description = "AWS region"
   type        = string
-  default     = "eu-west-1"
+  default     = "eu-central-1"
 }
 
 variable "prefix" {
   description = "Prefix for all resource names"
   type        = string
-  default     = "platform-dev"
+  default     = "k8s-od"
 }
 
 variable "ecr_image_count" {
