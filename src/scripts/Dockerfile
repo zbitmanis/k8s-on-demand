@@ -1,8 +1,8 @@
-FROM python:3.12-slim
+# Stage 1 — download kubectl and install Python deps
+FROM python:3.12-slim AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# Install kubectl for scripts that shell out
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -13,7 +13,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Stage 2 — minimal runtime image
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/kubectl
+COPY --from=builder /install /usr/local
 
 COPY *.py ./
 
