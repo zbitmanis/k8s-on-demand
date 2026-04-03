@@ -145,9 +145,13 @@ module "eks" {
 
     # Workload node group — runs tenant application pods
     # min_size=0 enables full scale-to-zero when cluster is idle
+    # Instance priority (Cluster Autoscaler picks cheapest that fits):
+    #   t3.medium — $0.047/hr, 2 vCPU / 4 GiB  — light dev workloads
+    #   m5.large  — $0.096/hr, 2 vCPU / 8 GiB  — general purpose
+    #   m5.xlarge — $0.192/hr, 4 vCPU / 16 GiB — standard tenant pods
     workload = {
       name           = "${var.cluster_name}-workload"
-      instance_types = ["m5.xlarge", "m5.2xlarge"]
+      instance_types = ["t3.medium", "m5.large", "m5.xlarge"]
 
       min_size     = 0
       max_size     = 20

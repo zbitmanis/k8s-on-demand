@@ -57,8 +57,7 @@
       [
         "@semantic-release/exec",
         {
-            "prepareCmd": "echo v${nextRelease.version} > .VERSION && sed -i \"s/^version:.*/version: ${nextRelease.version}/\" src/app-of-apps/Chart.yaml && for chart in src/applications/*/Chart.yaml; do sed -i \"s/^version:.*/version: ${nextRelease.version}/\" \"$chart\"; done",
-          "successCmd": "echo 'Released ${nextRelease.version}'"
+          "successCmd": "echo v${nextRelease.version} > .VERSION"
         }
       ]
     ]
