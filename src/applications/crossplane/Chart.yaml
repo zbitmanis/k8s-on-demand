@@ -1,0 +1,10 @@
+apiVersion: v2
+name: crossplane
+description: Crossplane core — installed as a system app via App-of-Apps
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: crossplane
+    repository: https://charts.crossplane.io/stable
+    version: "1.17.x"

@@ -1,0 +1,106 @@
+{{- if .Values.spec.gitops.applications.crossplane.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Must be synced before crossplaneProviderAws and crossplaneCompositions
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.crossplane.namespace | default "crossplane-system" }}
+  project: {{ .Values.spec.gitops.applications.crossplane.project | default "platform-system" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.crossplane.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.crossplane.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.crossplane.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+{{- if .Values.spec.gitops.applications.crossplane.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}
+---
+{{- if .Values.spec.gitops.applications.crossplaneProviderAws.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane-provider-aws
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Must sync after crossplane core, before compositions
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.crossplaneProviderAws.namespace | default "crossplane-system" }}
+  project: {{ .Values.spec.gitops.applications.crossplaneProviderAws.project | default "platform-system" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.crossplaneProviderAws.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.crossplaneProviderAws.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.crossplaneProviderAws.targetRevision | default .Values.spec.source.targetRevision }}
+{{- if .Values.spec.gitops.applications.crossplaneProviderAws.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}
+---
+{{- if .Values.spec.gitops.applications.crossplaneCompositions.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane-compositions
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Syncs last — depends on provider CRDs being installed
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.crossplaneCompositions.namespace | default "crossplane-system" }}
+  project: {{ .Values.spec.gitops.applications.crossplaneCompositions.project | default "platform-system" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.crossplaneCompositions.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.crossplaneCompositions.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.crossplaneCompositions.targetRevision | default .Values.spec.source.targetRevision }}
+{{- if .Values.spec.gitops.applications.crossplaneCompositions.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}

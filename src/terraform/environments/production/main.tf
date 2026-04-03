@@ -16,6 +16,9 @@ module "iam_management" {
   github_repo           = var.github_repo
   metrics_bucket_name   = var.metrics_bucket_name
   artifacts_bucket_name = var.artifacts_bucket_name
+
+  google_saml_metadata_xml = var.google_saml_metadata_xml
+  google_workspace_domain  = var.google_workspace_domain
 }
 
 module "eks_cluster" {
@@ -29,9 +32,11 @@ module "eks_cluster" {
   intra_subnet_ids   = module.vpc.intra_subnet_ids
 
   cluster_endpoint_public_access = var.cluster_endpoint_public_access
-  argocd_role_arn          = module.iam_management.argocd_role_arn
-  workflow_runner_role_arn = module.iam_management.workflow_runner_role_arn
-  terraform_role_arn       = module.iam_management.terraform_execution_role_arn
+  terraform_role_arn          = module.iam_management.terraform_execution_role_arn
+  argocd_role_arn             = module.iam_management.argocd_role_arn
+  workflow_runner_role_arn    = module.iam_management.workflow_runner_role_arn
+  break_glass_role_arn        = module.iam_management.break_glass_role_arn
+  ops_cluster_access_role_arn = module.iam_management.ops_cluster_access_role_arn
 }
 
 module "eks_addons" {
@@ -43,6 +48,23 @@ module "eks_addons" {
   oidc_provider_url  = module.eks_cluster.oidc_provider_url
 
   depends_on = [module.eks_cluster]
+}
+
+data "aws_caller_identity" "current" {}
+
+module "suspend_lambda" {
+  source = "../../modules/suspend-lambda"
+
+  cluster_name                = var.cluster_name
+  aws_region                  = var.region
+  aws_account_id              = data.aws_caller_identity.current.account_id
+  argo_workflow_iam_role_name = module.iam_management.workflow_runner_role_name
+
+  enable_schedule       = true
+  suspend_schedule_cron = "cron(0 20 ? * MON-FRI *)"
+  resume_schedule_cron  = "cron(0 7 ? * MON-FRI *)"
+
+  depends_on = [module.iam_management]
 }
 
 module "iam_tenant_roles" {

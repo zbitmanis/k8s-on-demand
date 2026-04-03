@@ -9,6 +9,25 @@ Ansible, ArgoCD, and Python scripts.
 Argo Workflows handles everything that happens **after** infrastructure exists —
 GitHub Actions handles everything that creates the infrastructure.
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+component "Argo Events" as events
+component "GitHub Actions\n(Terraform)" as gha
+component "Argo Workflows\nOrchestration" as workflows
+component "ArgoCD\n(App Sync)" as argocd
+component "Python Scripts" as scripts
+
+events --> workflows: triggers workflow
+gha --> workflows: dispatch via\ndispatch-github-actions template
+workflows --> gha: dispatch terraform apply/destroy
+workflows --> argocd: wait for app health\nvia poll-argocd-health
+workflows --> scripts: run-script template\n(validation, provisioning, etc.)
+@enduml
+```
+
 ## Installation
 
 Argo Workflows is deployed to the management cluster via ArgoCD:
@@ -25,6 +44,43 @@ RBAC: Workflow pods use the `platform-argo-workflow-runner` IRSA role for AWS AP
 ### `tenant-onboard`
 
 Full tenant provisioning pipeline. See [tenant-lifecycle.md](tenant-lifecycle.md) for step-by-step detail.
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+!define SWIMLANE_BG #F8F8F8
+!define HEADER_BG #D9D9D9
+
+partition "Argo Workflow" #FAFAFA {
+  start
+  :validate-config
+  (Python script);
+  :provision-namespace
+  (RBAC, NetworkPolicy,
+  ResourceQuota);
+  :wait-for-argocd-sync
+  (poll ApplicationSet);
+  :notify
+  (tenant onboarded);
+  end
+}
+
+partition "GitHub Actions" #E8E8E8 {
+  :dispatch-terraform
+  (provision-cluster GHA);
+  :wait-for-cluster
+  (EKS ACTIVE);
+  :run-ansible
+  (node bootstrap);
+  :register-cluster
+  (add to ArgoCD);
+}
+@enduml
+```
+
+#### `tenant-onboard` Workflow Definition
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1

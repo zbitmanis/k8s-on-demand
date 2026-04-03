@@ -3,7 +3,9 @@ spec:
     server: https://kubernetes.default.svc  # Single shared cluster
 
   default:
-    repoURL: https://github.com/<org>/k8s-on-demand.git
+    # Placeholder substituted at deploy time by provision-cluster.yaml via sed.
+    # For offline helm template/lint runs pass: --set spec.default.repoURL=https://github.com/org/repo.git
+    repoURL: https://github.com/${GITHUB_REPOSITORY}.git
     helm:
       valueFiles:
         - values.yaml
@@ -12,6 +14,9 @@ spec:
     targetRevision: HEAD
 
   gitops:
+    tenantApplicationSet:
+      isEnabled: true
+
     applications:
 
       externalSecretsOperator:
@@ -55,3 +60,48 @@ spec:
         namespace: gatekeeper-system
         isEnabled: true
         isEnabledAutoSync: true
+
+      gatekeeperPolicies:
+        appPath: src/applications/gatekeeper-policies
+        namespace: gatekeeper-system
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      argoWorkflows:
+        appPath: src/applications/argo-workflows
+        namespace: argo
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      argoEvents:
+        appPath: src/applications/argo-events
+        namespace: argo-events
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      platformRbac:
+        appPath: src/applications/platform-rbac
+        namespace: argo
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      # Day 1 — Crossplane and AWS provider must be installed in order:
+      # 1. crossplane (core), 2. crossplaneProviderAws (provider + ProviderConfig),
+      # 3. crossplaneCompositions (XRDs + Compositions)
+      crossplane:
+        appPath: src/applications/crossplane
+        namespace: crossplane-system
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      crossplaneProviderAws:
+        appPath: src/crossplane/providers
+        namespace: crossplane-system
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      crossplaneCompositions:
+        appPath: src/crossplane/compositions
+        namespace: crossplane-system
+        isEnabled: true
+        isEnabledAutoSync: false   # manual sync — composition changes need review

@@ -1,0 +1,18 @@
+argo-events:
+  controller:
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  webhook:
+    enabled: true

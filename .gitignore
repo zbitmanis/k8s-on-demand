@@ -1,0 +1,17 @@
+# Terraform — local state and overrides (never commit)
+src/terraform/environments/production/terraform.tfvars
+src/terraform/bootstrap/terraform.tfstate
+src/terraform/bootstrap/terraform.tfstate.backup
+src/terraform/bootstrap/.terraform/
+**/.terraform/
+*.tfplan
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local overrides
+.claude/settings.local.json

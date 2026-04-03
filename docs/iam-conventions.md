@@ -10,6 +10,44 @@
 
 ## Role Taxonomy
 
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+rectangle "GitHub Actions" {
+  component "platform-terraform-execution" as gha_role
+}
+
+rectangle "EKS System Nodes" {
+  component "platform-argocd-cluster-manager" as argocd_role
+  component "platform-argo-workflow-runner" as argo_role
+}
+
+rectangle "Per-Tenant Workloads" {
+  component "tenant-<id>-irsa" as tenant_role
+}
+
+rectangle "Human" {
+  component "platform-break-glass\n(MFA required)" as breakglass_role
+  component "platform-ops-cluster-access\n(Google Workspace SSO)" as ops_role
+}
+
+component "GitHub OIDC Provider" as github_oidc
+component "EKS OIDC Provider" as eks_oidc
+component "AWS Admin" as admin
+component "Google Workspace\nSAML Provider" as google_saml
+
+github_oidc --> gha_role: trusts
+eks_oidc --> argocd_role: trusts
+eks_oidc --> argo_role: trusts
+eks_oidc --> tenant_role: trusts\n(+ namespace SA condition)
+admin --> breakglass_role: trusts\n(MFA)
+google_saml --> ops_role: trusts\n(SAML:hd = company.com)
+
+@enduml
+```
+
 ### Management Plane Roles
 
 These roles exist once and manage platform infrastructure.
@@ -92,6 +130,30 @@ A pod in a different namespace or using a different service account cannot assum
 Even if the trust policy were compromised, the role can only access secrets under the `/<tenant-id>/*` path
 in AWS Secrets Manager. Cross-tenant secret access is blocked at both the IRSA and IAM levels.
 
+## IRSA Trust Pattern
+
+```plantuml
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+participant "Tenant Pod\n(with ServiceAccount)" as pod
+participant "EKS API Server\n(OIDC Provider)" as eks
+participant "AWS STS" as sts
+participant "AWS Service\n(e.g. S3)" as aws_svc
+
+pod -> eks: 1. Pod starts with\nannotated ServiceAccount
+eks -> pod: 2. Inject projected token\n(JWT with sub=ns:sa)
+pod -> sts: 3. sts:AssumeRoleWithWebIdentity\n(JWT, role ARN)
+sts -> eks: 4. Validate JWT against\nregistered OIDC provider
+eks -> sts: 5. Sub claim includes\nnamespace:serviceaccount
+sts -> pod: 6. Return scoped\ntemporary credentials
+pod -> aws_svc: 7. Access S3 with\ntenant prefix condition
+aws_svc -> pod: 8. Resource access\ngranted
+
+@enduml
+```
+
 ## Shared System Roles Scoped by Resource
 
 Roles used by shared system components (Prometheus, load balancer controller, cluster autoscaler)
@@ -149,30 +211,80 @@ This role is the highest-value target and has strict mitigations:
 }
 ```
 
-## EKS Access — aws-auth ConfigMap
+## EKS Cluster Access — Access Entry API
 
-The cluster's `aws-auth` ConfigMap grants cluster access to:
+The cluster uses `authentication_mode = "API"` — the legacy `aws-auth` ConfigMap is
+**not used**. All cluster access is managed through EKS Access Entries, visible in the
+AWS Console under EKS → Cluster → Access and fully auditable via CloudTrail.
 
-```yaml
-mapRoles:
-  # Terraform execution role - used only during cluster bootstrap
-  - rolearn: arn:aws:iam::<account-id>:role/platform-terraform-execution
-    username: terraform
-    groups: ["system:masters"]
+### How GitHub Actions gets cluster-admin
 
-  # ArgoCD cluster manager - manages cluster-scoped resources
-  - rolearn: arn:aws:iam::<account-id>:role/platform-argocd-cluster-manager
-    username: argocd
-    groups: ["platform:argocd"]
+The chain has three parts, all in Terraform — no manual steps:
 
-  # Node role - required for all nodes to join cluster
-  - rolearn: arn:aws:iam::<account-id>:role/cluster-node-role
-    username: system:node:{{EC2PrivateDNSName}}
-    groups: ["system:bootstrappers", "system:nodes"]
+**Part 1 — OIDC trust** (`iam-management` module): the `platform-terraform-execution`
+IAM role trusts `token.actions.githubusercontent.com` for the specific org/repo only.
+
+```hcl
+condition {
+  test     = "StringLike"
+  variable = "token.actions.githubusercontent.com:sub"
+  values   = ["repo:<org>/<repo>:*"]
+}
 ```
 
-`system:masters` access for Terraform is strictly for cluster bootstrap. Long-term cluster admin
-access uses a dedicated management role, not the Terraform execution role.
+**Part 2 — EKS Access Entry** (`eks-cluster` module): the role is added as an
+Access Entry with `AmazonEKSClusterAdminPolicy` at cluster scope.
+
+```hcl
+access_entries = merge({
+  terraform = {
+    principal_arn = var.terraform_role_arn      # platform-terraform-execution ARN
+    type          = "STANDARD"
+    policy_associations = {
+      cluster_admin = {
+        policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        access_scope = { type = "cluster" }
+      }
+    }
+  }
+}, ...)
+```
+
+**Part 3 — kubeconfig** (`provision-cluster.yaml`): the GHA job assumes the same OIDC
+role, then generates a kubeconfig that uses it for token exchange.
+
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}   # platform-terraform-execution
+    aws-region: ${{ secrets.AWS_REGION }}
+
+- run: aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+```
+
+EKS generates a short-lived token (`aws eks get-token`) at kubectl invocation time.
+The token is signed by STS and carries the assumed role ARN. EKS validates it against
+the Access Entry table — no ConfigMap lookup involved.
+
+### Access entry summary
+
+| Entry | IAM Role | Access type | Scope | Used by |
+|---|---|---|---|---|
+| `terraform` | `platform-terraform-execution` | `AmazonEKSClusterAdminPolicy` | cluster | GitHub Actions (OIDC) |
+| `break_glass` | `platform-break-glass` | `AmazonEKSClusterAdminPolicy` | cluster | Humans (MFA required) |
+| `argocd` | `platform-argocd-cluster-manager` | Kubernetes group `platform:argocd` | RBAC-controlled | ArgoCD IRSA |
+| `workflow_runner` | `platform-argo-workflow-runner` | Kubernetes group `platform:workflow-runner` | RBAC-controlled | Argo Workflows IRSA |
+
+The `argocd` and `workflow_runner` entries use `kubernetes_groups` rather than EKS
+managed policies so that the platform-rbac ArgoCD app owns the exact permissions via
+ClusterRoleBindings — the IAM layer only establishes identity, Kubernetes RBAC controls authorization.
+
+### Why not `system:masters`?
+
+`system:masters` is a built-in Kubernetes group with unconditional cluster-admin that
+cannot be audited at the Kubernetes RBAC level. `AmazonEKSClusterAdminPolicy` via
+Access Entry is equivalent in practice but all access is visible in CloudTrail and
+the AWS Console, and can be revoked without touching the cluster.
 
 ## Tenant RBAC vs. IAM
 

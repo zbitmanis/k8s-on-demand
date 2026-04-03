@@ -52,6 +52,79 @@ jobs:
             The subject "{subject}" must start with a lowercase letter.
             Example: feat(terraform): add vpc module
 
+  # Validates all tenant config.yaml files changed in this PR.
+  # Runs the same script used at onboard time so config errors are caught before merge.
+  validate-tenant-configs:
+    name: Validate tenant configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history to diff against base branch
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Find changed tenant configs
+        id: changed
+        run: |
+          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | grep -E '^tenants/[^/]+/config\.yaml$' || true)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$FILES"     >> "$GITHUB_OUTPUT"
+          echo "EOF"        >> "$GITHUB_OUTPUT"
+
+      - name: Validate changed configs
+        if: steps.changed.outputs.files != ''
+        run: |
+          FAILED=0
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            echo "Validating $f ..."
+            if ! python src/scripts/validate_tenant_config.py --file "$f"; then
+              FAILED=$(( FAILED + 1 ))
+            fi
+          done <<< "${{ steps.changed.outputs.files }}"
+          if [[ "$FAILED" -gt 0 ]]; then
+            echo "$FAILED tenant config(s) failed validation."
+            exit 1
+          fi
+          echo "All tenant configs valid."
+
+  # Validates Terraform syntax on any PR touching src/terraform/.
+  # Note: provider lock files (.terraform.lock.hcl) must be generated locally via
+  #   terraform providers lock -platform=linux_amd64
+  # and committed to each environment directory before this job will fully pass.
+  terraform-validate:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.changed_files, 'src/terraform') ||
+      github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+
+      - name: Validate bootstrap module
+        working-directory: src/terraform/bootstrap
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate production environment
+        working-directory: src/terraform/environments/production
+        run: |
+          terraform init -backend=false
+          terraform validate
+
   # Labels the PR with the expected version bump so reviewers can see
   # the release impact before approving.
   label-version-bump:

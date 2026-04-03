@@ -1,16 +1,28 @@
-# ArgoCD Application definitions for this tenant.
-# All applications are scoped to the tenant namespace.
-# This file is picked up by the tenant ApplicationSet in argocd/.
-
-tenant_id: example-tenant
-cluster_server: https://kubernetes.default.svc  # Single shared cluster
-
-apps:
-  - name: backend
-    source:
-      repoURL: https://github.com/<tenant-org>/<tenant-repo>.git
-      targetRevision: main
-      path: helm/backend
+# Example tenant applications — deployed by the tenant-workloads ApplicationSet.
+# Replace source.repoURL and path with the tenant's actual application repo.
+# Add additional Application documents separated by --- for additional workloads.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: example-tenant-backend
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: example-tenant
+  source:
+    repoURL: https://github.com/your-org/your-tenant-repo.git
+    targetRevision: main
+    path: helm/backend
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
     namespace: example-tenant
-    syncPolicy:
+  syncPolicy:
+    automated:
       prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

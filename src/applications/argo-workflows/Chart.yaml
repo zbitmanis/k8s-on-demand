@@ -1,0 +1,11 @@
+apiVersion: v2
+name: argo-workflows
+description: Argo Workflows — workflow orchestration engine for tenant lifecycle operations
+type: application
+version: 0.1.0
+appVersion: "3.5.7"
+
+dependencies:
+  - name: argo-workflows
+    version: "0.41.3"
+    repository: https://argoproj.github.io/argo-helm

@@ -1,0 +1,24 @@
+crossplane:
+  # Resource limits for the crossplane and rbac-manager pods
+  resourcesCrossplane:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  resourcesRBACManager:
+    limits:
+      cpu: 100m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Metrics endpoint — scraped by Prometheus via namespace label
+  metrics:
+    enabled: true
+
+  # Leader election — required when running multiple replicas
+  leaderElection: true

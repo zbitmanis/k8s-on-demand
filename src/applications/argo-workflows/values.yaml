@@ -1,0 +1,55 @@
+argo-workflows:
+  controller:
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+  server:
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    # Disable auth for in-cluster access (use ArgoCD OIDC proxy in production)
+    extraArgs:
+      - --auth-mode=server
+
+  executor:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  workflow:
+    serviceAccount:
+      create: true
+      name: argo-workflow-runner
+
+  artifactRepository:
+    s3:
+      # Bucket, region, and roleARN injected from Terraform outputs via provision-cluster.yaml
+      bucket: ""
+      endpoint: s3.amazonaws.com
+      region: ""
+      keyFormat: "workflows/{{workflow.name}}/{{workflow.uid}}/{{pod.name}}"
+      roleARN: ""

@@ -102,6 +102,7 @@ jobs:
     name: Terraform destroy
     runs-on: ubuntu-latest
     needs: pre-destroy-drain
+    environment: ${{ inputs.environment }}   # requires approval for production
 
     steps:
       - uses: actions/checkout@v4

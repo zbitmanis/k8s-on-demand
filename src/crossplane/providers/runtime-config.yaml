@@ -1,0 +1,48 @@
+# DeploymentRuntimeConfig — controls how the provider pod is deployed.
+# Annotates the provider ServiceAccount with the IRSA role ARN so the
+# AWS SDK picks up credentials via the pod identity webhook without
+# mounting any static credentials.
+#
+# The IAM role (crossplane-provider-aws) is created by Terraform in
+# src/terraform/modules/iam/ and trusts the EKS OIDC provider with
+# the condition:
+#   sts:AssumeRoleWithWebIdentity
+#   Condition: StringEquals
+#     oidc.eks.<region>.amazonaws.com/id/<oidc-id>:sub
+#       = system:serviceaccount:crossplane-system:provider-aws
+#
+# The role carries a policy scoped to the resources Crossplane is
+# allowed to manage — no AdministratorAccess.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-aws-irsa
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          serviceAccountName: provider-aws
+          containers:
+            - name: package-runtime
+              resources:
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+---
+# ServiceAccount for the provider pod.
+# The eks.amazonaws.com/role-arn annotation is what triggers the
+# EKS Pod Identity Webhook to inject AWS credentials via projected
+# service account token — this is the IRSA mechanism.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: provider-aws
+  namespace: crossplane-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/crossplane-provider-aws
+    eks.amazonaws.com/audience: sts.amazonaws.com

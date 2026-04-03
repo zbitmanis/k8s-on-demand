@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["deps"],
+  "prCreation": "immediate",
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "description": "Group all Helm chart dependency updates",
+      "matchManagers": ["helmv3"],
+      "groupName": "helm charts",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Group all Terraform provider updates",
+      "matchManagers": ["terraform"],
+      "groupName": "terraform providers",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Python suspend Lambda dependencies",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["src/scripts/suspend/requirements.txt"],
+      "groupName": "suspend lambda deps"
+    },
+    {
+      "description": "Python script dependencies",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["src/scripts/requirements.txt"],
+      "groupName": "platform scripts deps"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "ArgoCD version pinned in provision-cluster.yaml env block",
+      "customType": "regex",
+      "fileMatch": ["^\\.github/workflows/provision-cluster\\.yaml$"],
+      "matchStrings": ["ARGOCD_VERSION:\\s*(?<currentValue>v[\\d.]+)"],
+      "depNameTemplate": "argoproj/argo-cd",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "terraform": {
+    "enabled": true
+  },
+  "helm-values": {
+    "fileMatch": ["src/applications/.*/values\\.yaml$"]
+  }
+}

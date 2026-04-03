@@ -1,0 +1,478 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Bootstrap: GitHub Actions OIDC provider + platform-terraform-execution role. Run once via AWS CLI before the first GHA Terraform pipeline executes. Deploy with: aws cloudformation deploy --template-file github-oidc-role.cfn.json --stack-name platform-gha-bootstrap --capabilities CAPABILITY_NAMED_IAM --parameter-overrides GitHubOrg=<org> GitHubRepo=<repo> Prefix=<prefix>",
+
+  "Parameters": {
+    "GitHubOrg": {
+      "Type": "String",
+      "Description": "GitHub organisation name (e.g. my-org)"
+    },
+    "GitHubRepo": {
+      "Type": "String",
+      "Description": "GitHub repository name (e.g. k8s-on-demand)"
+    },
+    "Prefix": {
+      "Type": "String",
+      "Default": "platform",
+      "Description": "Resource name prefix used in bootstrap (var.prefix in bootstrap module, e.g. platform-dev)"
+    },
+    "RoleName": {
+      "Type": "String",
+      "Default": "platform-terraform-execution",
+      "Description": "IAM role name assumed by GitHub Actions for Terraform plan/apply"
+    }
+  },
+
+  "Resources": {
+    "GitHubOIDCProvider": {
+      "Type": "AWS::IAM::OIDCProvider",
+      "Properties": {
+        "Url": "https://token.actions.githubusercontent.com",
+        "ClientIdList": ["sts.amazonaws.com"],
+        "ThumbprintList": [
+          "6938fd4d98bab03faadb97b34396831e3780aea1",
+          "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+        ]
+      }
+    },
+
+    "TerraformExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": { "Ref": "RoleName" },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": { "Ref": "GitHubOIDCProvider" }
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                },
+                "StringLike": {
+                  "token.actions.githubusercontent.com:sub": {
+                    "Fn::Sub": "repo:${GitHubOrg}/${GitHubRepo}:*"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "terraform-execution-least-privilege",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+
+                {
+                  "Sid": "TerraformStateS3",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:DeleteObject",
+                    "s3:ListBucket",
+                    "s3:GetBucketVersioning",
+                    "s3:GetEncryptionConfiguration"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:s3:::${Prefix}-tf-state" },
+                    { "Fn::Sub": "arn:aws:s3:::${Prefix}-tf-state/*" }
+                  ]
+                },
+
+                {
+                  "Sid": "TerraformStateDynamoDB",
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:DeleteItem"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:dynamodb:*:${AWS::AccountId}:table/${Prefix}-tf-locks"
+                  }
+                },
+
+                {
+                  "Sid": "S3BucketManagement",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:CreateBucket",
+                    "s3:DeleteBucket",
+                    "s3:GetBucketLocation",
+                    "s3:GetBucketPolicy",
+                    "s3:PutBucketPolicy",
+                    "s3:DeleteBucketPolicy",
+                    "s3:PutBucketVersioning",
+                    "s3:GetBucketVersioning",
+                    "s3:PutBucketEncryption",
+                    "s3:GetEncryptionConfiguration",
+                    "s3:PutBucketPublicAccessBlock",
+                    "s3:GetBucketPublicAccessBlock",
+                    "s3:PutLifecycleConfiguration",
+                    "s3:GetLifecycleConfiguration",
+                    "s3:PutObject",
+                    "s3:GetObject",
+                    "s3:DeleteObject",
+                    "s3:ListBucket",
+                    "s3:GetBucketTagging",
+                    "s3:PutBucketTagging"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:s3:::${Prefix}-*" },
+                    { "Fn::Sub": "arn:aws:s3:::${Prefix}-*/*" }
+                  ]
+                },
+
+                {
+                  "Sid": "ECRManagement",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:CreateRepository",
+                    "ecr:DeleteRepository",
+                    "ecr:DescribeRepositories",
+                    "ecr:GetRepositoryPolicy",
+                    "ecr:PutRepositoryPolicy",
+                    "ecr:DeleteRepositoryPolicy",
+                    "ecr:PutImageScanningConfiguration",
+                    "ecr:PutImageTagMutability",
+                    "ecr:PutLifecyclePolicy",
+                    "ecr:GetLifecyclePolicy",
+                    "ecr:DeleteLifecyclePolicy",
+                    "ecr:TagResource",
+                    "ecr:UntagResource",
+                    "ecr:ListTagsForResource"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:ecr:*:${AWS::AccountId}:repository/platform-*"
+                  }
+                },
+
+                {
+                  "Sid": "VPCReadOnly",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:Describe*",
+                    "ec2:Get*"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
+                  "Sid": "VPCMutate",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:CreateVpc",
+                    "ec2:DeleteVpc",
+                    "ec2:ModifyVpcAttribute",
+                    "ec2:CreateSubnet",
+                    "ec2:DeleteSubnet",
+                    "ec2:ModifySubnetAttribute",
+                    "ec2:CreateInternetGateway",
+                    "ec2:DeleteInternetGateway",
+                    "ec2:AttachInternetGateway",
+                    "ec2:DetachInternetGateway",
+                    "ec2:CreateRouteTable",
+                    "ec2:DeleteRouteTable",
+                    "ec2:AssociateRouteTable",
+                    "ec2:DisassociateRouteTable",
+                    "ec2:CreateRoute",
+                    "ec2:DeleteRoute",
+                    "ec2:AllocateAddress",
+                    "ec2:ReleaseAddress",
+                    "ec2:AssociateAddress",
+                    "ec2:DisassociateAddress",
+                    "ec2:CreateNatGateway",
+                    "ec2:DeleteNatGateway",
+                    "ec2:CreateSecurityGroup",
+                    "ec2:DeleteSecurityGroup",
+                    "ec2:AuthorizeSecurityGroupIngress",
+                    "ec2:RevokeSecurityGroupIngress",
+                    "ec2:AuthorizeSecurityGroupEgress",
+                    "ec2:RevokeSecurityGroupEgress",
+                    "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+                    "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+                    "ec2:CreateLaunchTemplate",
+                    "ec2:DeleteLaunchTemplate",
+                    "ec2:CreateLaunchTemplateVersion",
+                    "ec2:DeleteLaunchTemplateVersions",
+                    "ec2:ModifyLaunchTemplate",
+                    "ec2:CreateTags",
+                    "ec2:DeleteTags"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
+                  "Sid": "EKS",
+                  "Effect": "Allow",
+                  "Action": [
+                    "eks:CreateCluster",
+                    "eks:DeleteCluster",
+                    "eks:DescribeCluster",
+                    "eks:UpdateClusterConfig",
+                    "eks:UpdateClusterVersion",
+                    "eks:TagResource",
+                    "eks:UntagResource",
+                    "eks:CreateNodegroup",
+                    "eks:DeleteNodegroup",
+                    "eks:DescribeNodegroup",
+                    "eks:UpdateNodegroupConfig",
+                    "eks:UpdateNodegroupVersion",
+                    "eks:ListNodegroups",
+                    "eks:CreateAddon",
+                    "eks:DeleteAddon",
+                    "eks:DescribeAddon",
+                    "eks:UpdateAddon",
+                    "eks:ListAddons",
+                    "eks:DescribeAddonVersions",
+                    "eks:CreateAccessEntry",
+                    "eks:DeleteAccessEntry",
+                    "eks:DescribeAccessEntry",
+                    "eks:AssociateAccessPolicy",
+                    "eks:DisassociateAccessPolicy",
+                    "eks:ListAccessEntries",
+                    "eks:ListAccessPolicies",
+                    "eks:ListAssociatedAccessPolicies",
+                    "eks:CreateOidcToken",
+                    "eks:DescribeIdentityProviderConfig",
+                    "eks:AssociateIdentityProviderConfig",
+                    "eks:DisassociateIdentityProviderConfig"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
+                  "Sid": "KMS",
+                  "Effect": "Allow",
+                  "Action": [
+                    "kms:CreateKey",
+                    "kms:DescribeKey",
+                    "kms:EnableKeyRotation",
+                    "kms:GetKeyPolicy",
+                    "kms:GetKeyRotationStatus",
+                    "kms:ListResourceTags",
+                    "kms:PutKeyPolicy",
+                    "kms:ScheduleKeyDeletion",
+                    "kms:CreateAlias",
+                    "kms:DeleteAlias",
+                    "kms:ListAliases",
+                    "kms:TagResource",
+                    "kms:UntagResource"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
+                  "Sid": "IAMRoles",
+                  "Effect": "Allow",
+                  "Action": [
+                    "iam:CreateRole",
+                    "iam:DeleteRole",
+                    "iam:GetRole",
+                    "iam:UpdateRole",
+                    "iam:UpdateRoleDescription",
+                    "iam:UpdateAssumeRolePolicy",
+                    "iam:TagRole",
+                    "iam:UntagRole",
+                    "iam:ListRoleTags",
+                    "iam:PutRolePolicy",
+                    "iam:GetRolePolicy",
+                    "iam:DeleteRolePolicy",
+                    "iam:ListRolePolicies",
+                    "iam:AttachRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:ListAttachedRolePolicies",
+                    "iam:PassRole"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/platform-*" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-external-secrets" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-thanos-sidecar" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-load-balancer-controller" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-ebs-csi-driver" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-vpc-cni" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-cluster-suspend-role" }
+                  ]
+                },
+
+                {
+                  "Sid": "IAMPolicies",
+                  "Effect": "Allow",
+                  "Action": [
+                    "iam:CreatePolicy",
+                    "iam:DeletePolicy",
+                    "iam:GetPolicy",
+                    "iam:GetPolicyVersion",
+                    "iam:CreatePolicyVersion",
+                    "iam:DeletePolicyVersion",
+                    "iam:ListPolicyVersions",
+                    "iam:TagPolicy",
+                    "iam:UntagPolicy",
+                    "iam:ListPolicyTags"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:policy/platform-*" },
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:policy/*-cluster-suspend-*" }
+                  ]
+                },
+
+                {
+                  "Sid": "IAMOIDCAndSAML",
+                  "Effect": "Allow",
+                  "Action": [
+                    "iam:CreateOpenIDConnectProvider",
+                    "iam:DeleteOpenIDConnectProvider",
+                    "iam:GetOpenIDConnectProvider",
+                    "iam:UpdateOpenIDConnectProviderThumbprint",
+                    "iam:AddClientIDToOpenIDConnectProvider",
+                    "iam:RemoveClientIDFromOpenIDConnectProvider",
+                    "iam:TagOpenIDConnectProvider",
+                    "iam:UntagOpenIDConnectProvider",
+                    "iam:CreateSAMLProvider",
+                    "iam:DeleteSAMLProvider",
+                    "iam:GetSAMLProvider",
+                    "iam:UpdateSAMLProvider",
+                    "iam:ListSAMLProviders",
+                    "iam:TagSAMLProvider",
+                    "iam:UntagSAMLProvider"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
+                  "Sid": "IAMServiceLinkedRoles",
+                  "Effect": "Allow",
+                  "Action": "iam:CreateServiceLinkedRole",
+                  "Resource": "arn:aws:iam::*:role/aws-service-role/*",
+                  "Condition": {
+                    "StringLike": {
+                      "iam:AWSServiceName": [
+                        "eks.amazonaws.com",
+                        "eks-nodegroup.amazonaws.com",
+                        "eks-fargate.amazonaws.com",
+                        "elasticloadbalancing.amazonaws.com",
+                        "ec2.amazonaws.com"
+                      ]
+                    }
+                  }
+                },
+
+                {
+                  "Sid": "Lambda",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:CreateFunction",
+                    "lambda:DeleteFunction",
+                    "lambda:GetFunction",
+                    "lambda:GetFunctionConfiguration",
+                    "lambda:UpdateFunctionCode",
+                    "lambda:UpdateFunctionConfiguration",
+                    "lambda:TagResource",
+                    "lambda:UntagResource",
+                    "lambda:ListTags",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                    "lambda:GetPolicy",
+                    "lambda:ListVersionsByFunction",
+                    "lambda:PublishVersion"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:function:*-cluster-suspend"
+                  }
+                },
+
+                {
+                  "Sid": "EventBridge",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutRule",
+                    "events:DeleteRule",
+                    "events:DescribeRule",
+                    "events:PutTargets",
+                    "events:RemoveTargets",
+                    "events:ListTargetsByRule",
+                    "events:TagResource",
+                    "events:UntagResource",
+                    "events:ListTagsForResource"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:rule/*-cluster-suspend-*"
+                  }
+                },
+
+                {
+                  "Sid": "CloudWatchLogs",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:DeleteLogGroup",
+                    "logs:DescribeLogGroups",
+                    "logs:PutRetentionPolicy",
+                    "logs:DeleteRetentionPolicy",
+                    "logs:TagLogGroup",
+                    "logs:UntagLogGroup",
+                    "logs:ListTagsLogGroup",
+                    "logs:TagResource",
+                    "logs:UntagResource",
+                    "logs:ListTagsForResource"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*-cluster-suspend:*"
+                  }
+                },
+
+                {
+                  "Sid": "SSM",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:PutParameter",
+                    "ssm:GetParameter",
+                    "ssm:GetParameters",
+                    "ssm:DeleteParameter",
+                    "ssm:DescribeParameters",
+                    "ssm:AddTagsToResource",
+                    "ssm:RemoveTagsFromResource",
+                    "ssm:ListTagsForResource"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:ssm:*:${AWS::AccountId}:parameter/cluster-suspend/*"
+                  }
+                },
+
+                {
+                  "Sid": "STSCallerIdentity",
+                  "Effect": "Allow",
+                  "Action": "sts:GetCallerIdentity",
+                  "Resource": "*"
+                }
+
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          { "Key": "managed-by", "Value": "cloudformation-bootstrap" },
+          { "Key": "purpose",    "Value": "github-actions-terraform" }
+        ]
+      }
+    }
+  },
+
+  "Outputs": {
+    "OIDCProviderArn": {
+      "Description": "ARN of the GitHub Actions OIDC provider",
+      "Value": { "Ref": "GitHubOIDCProvider" }
+    },
+    "TerraformExecutionRoleArn": {
+      "Description": "ARN of the Terraform execution role — set as GHA secret AWS_ROLE_ARN",
+      "Value": { "Fn::GetAtt": ["TerraformExecutionRole", "Arn"] }
+    }
+  }
+}

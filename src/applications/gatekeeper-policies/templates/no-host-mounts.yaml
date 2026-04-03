@@ -1,0 +1,38 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8snohostmounts
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sNoHostMounts
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8snohostmounts
+        violation[{"msg": msg}] {
+          vol := input.review.object.spec.volumes[_]
+          vol.hostPath
+          msg := sprintf("Volume <%v> uses hostPath which is not allowed", [vol.name])
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sNoHostMounts
+metadata:
+  name: no-host-mounts
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  enforcementAction: {{ .Values.enforceAction }}
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: {{ .Values.excludedNamespaces | toJson }}

@@ -37,26 +37,86 @@ module "eks" {
     provider_key_arn = aws_kms_key.eks.arn
   }
 
-  # aws-auth ConfigMap — platform roles
+  # ── Authentication mode ──────────────────────────────────────────────────────
+  # "API" — EKS Access Entry API only.  No aws-auth ConfigMap is created or
+  # consulted.  All cluster access is managed through access_entries here and
+  # visible in the AWS Console / CloudTrail.
+  # Never set to "CONFIG_MAP" for new clusters — that path is deprecated.
+  authentication_mode                      = "API"
   enable_cluster_creator_admin_permissions = false
 
-  access_entries = {
-    terraform = {
-      kubernetes_groups = ["system:masters"]
-      principal_arn     = var.terraform_role_arn
-      type              = "STANDARD"
-    }
-    argocd = {
-      kubernetes_groups = ["platform:argocd"]
-      principal_arn     = var.argocd_role_arn
-      type              = "STANDARD"
-    }
-    workflow_runner = {
-      kubernetes_groups = ["platform:workflow-runner"]
-      principal_arn     = var.workflow_runner_role_arn
-      type              = "STANDARD"
-    }
-  }
+  # ── Access entries ────────────────────────────────────────────────────────────
+  # Each entry maps one IAM principal to cluster access.
+  #
+  # Terraform / GitHub Actions role:
+  #   Uses AmazonEKSClusterAdminPolicy (EKS managed, cluster-scoped).
+  #   This is the ONLY entry that should have cluster-admin level access.
+  #   The role is assumed by GHA via OIDC — no static credentials anywhere.
+  #
+  # ArgoCD + Argo Workflow runner:
+  #   Use kubernetes_groups so downstream Kubernetes RBAC (ClusterRoleBindings
+  #   in the platform-rbac app) controls exactly what each component can do.
+  #   Prefer fine-grained RBAC over EKS managed policies for in-cluster roles.
+  # access_entries is a map(any) — use merge() to conditionally include break-glass
+  access_entries = merge(
+    {
+      # GitHub Actions Terraform execution role — cluster-admin for Day 0 bootstrap.
+      # Assumed via OIDC, no static credentials.  Only entry with cluster-admin.
+      terraform = {
+        principal_arn = var.terraform_role_arn
+        type          = "STANDARD"
+        policy_associations = {
+          cluster_admin = {
+            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+            access_scope = {
+              type = "cluster"   # cluster-wide, not namespace-scoped
+            }
+          }
+        }
+      }
+
+      # ArgoCD application controller — mapped to Kubernetes RBAC group.
+      # ClusterRoleBindings in the platform-rbac ArgoCD app control actual permissions.
+      argocd = {
+        kubernetes_groups = ["platform:argocd"]
+        principal_arn     = var.argocd_role_arn
+        type              = "STANDARD"
+      }
+
+      # Argo Workflow runner — mapped to Kubernetes RBAC group.
+      workflow_runner = {
+        kubernetes_groups = ["platform:workflow-runner"]
+        principal_arn     = var.workflow_runner_role_arn
+        type              = "STANDARD"
+      }
+    },
+
+    # Break-glass access entry — only included when the ARN is provided.
+    # MFA requirement is enforced on the IAM role trust policy (iam-management module).
+    var.break_glass_role_arn != "" ? {
+      break_glass = {
+        principal_arn = var.break_glass_role_arn
+        type          = "STANDARD"
+        policy_associations = {
+          cluster_admin = {
+            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+            access_scope = { type = "cluster" }
+          }
+        }
+      }
+    } : {},
+
+    # Engineer kubectl access via Google Workspace SAML (saml2aws).
+    # Mapped to Kubernetes RBAC group platform:ops — not EKS managed policy.
+    # ClusterRoleBinding in platform-rbac app controls actual permissions.
+    var.ops_cluster_access_role_arn != "" ? {
+      ops_cluster_access = {
+        kubernetes_groups = ["platform:ops"]
+        principal_arn     = var.ops_cluster_access_role_arn
+        type              = "STANDARD"
+      }
+    } : {}
+  )
 
   eks_managed_node_groups = {
     # System node group — runs platform components (ArgoCD, Prometheus, Gatekeeper, etc.)
@@ -85,9 +145,13 @@ module "eks" {
 
     # Workload node group — runs tenant application pods
     # min_size=0 enables full scale-to-zero when cluster is idle
+    # Instance priority (Cluster Autoscaler picks cheapest that fits):
+    #   t3.medium — $0.047/hr, 2 vCPU / 4 GiB  — light dev workloads
+    #   m5.large  — $0.096/hr, 2 vCPU / 8 GiB  — general purpose
+    #   m5.xlarge — $0.192/hr, 4 vCPU / 16 GiB — standard tenant pods
     workload = {
       name           = "${var.cluster_name}-workload"
-      instance_types = ["m5.xlarge", "m5.2xlarge"]
+      instance_types = ["t3.medium", "m5.large", "m5.xlarge"]
 
       min_size     = 0
       max_size     = 20

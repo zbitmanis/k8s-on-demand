@@ -131,6 +131,57 @@ resource "aws_iam_role_policy" "workflow_runner" {
   policy = data.aws_iam_policy_document.workflow_runner_policy.json
 }
 
+# ── Google Workspace SAML provider ───────────────────────────────────────────
+# Enables engineers to obtain temporary AWS credentials via Google Workspace SSO.
+# Metadata XML is downloaded from Google Admin Console when creating the custom
+# SAML app (see docs/iam-conventions.md for setup steps).
+# ACS URL in Google Admin: https://signin.aws.amazon.com/saml
+# Entity ID in Google Admin: urn:amazon:webservices
+
+resource "aws_iam_saml_provider" "google_workspace" {
+  name                   = "google-workspace-saml"
+  saml_metadata_document = var.google_saml_metadata_xml
+}
+
+# ── platform-ops-cluster-access ──────────────────────────────────────────────
+# Human operator kubectl access for dev/sandbox clusters.
+# Assumed via Google Workspace SAML federation using saml2aws CLI tool.
+# Session duration: 8 hours (suitable for a full working day on a dev cluster).
+# Access scope: SAML:hd restricted to company domain — no per-group enforcement
+# needed for dev/sandbox. Kubernetes RBAC (platform:ops ClusterRoleBinding) is
+# the effective permissions boundary.
+
+data "aws_iam_policy_document" "ops_cluster_access_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithSAML"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_saml_provider.google_workspace.arn]
+    }
+
+    # Required by AWS for all direct IAM SAML role assumptions.
+    condition {
+      test     = "StringEquals"
+      variable = "SAML:aud"
+      values   = ["https://signin.aws.amazon.com/saml"]
+    }
+
+    # Restrict to engineers on the company Google Workspace domain.
+    condition {
+      test     = "StringEquals"
+      variable = "SAML:hd"
+      values   = [var.google_workspace_domain]
+    }
+  }
+}
+
+resource "aws_iam_role" "ops_cluster_access" {
+  name                 = "platform-ops-cluster-access"
+  assume_role_policy   = data.aws_iam_policy_document.ops_cluster_access_trust.json
+  max_session_duration = 28800  # 8 hours — covers a full working day on dev/sandbox
+}
+
 # ── platform-break-glass ──────────────────────────────────────────────────────
 # Emergency access role. Requires MFA. Not used in normal operations.
 

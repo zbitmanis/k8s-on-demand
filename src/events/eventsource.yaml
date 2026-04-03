@@ -16,11 +16,39 @@ spec:
       port: "12000"
       endpoint: /onboard-tenant
       method: POST
+      auth:
+        secret:
+          name: webhook-hmac-secret
+          key: secret
 
     offboard-tenant:
       port: "12000"
       endpoint: /offboard-tenant
       method: POST
+      auth:
+        secret:
+          name: webhook-hmac-secret
+          key: secret
+
+    # Graceful suspend/resume — triggers cluster-suspend WorkflowTemplate (drain + notify + audit trail)
+    # Hard path (no drain): EventBridge schedule → Lambda directly, independent of Argo
+    suspend-cluster:
+      port: "12000"
+      endpoint: /suspend-cluster
+      method: POST
+      auth:
+        secret:
+          name: webhook-hmac-secret
+          key: secret
+
+    resume-cluster:
+      port: "12000"
+      endpoint: /resume-cluster
+      method: POST
+      auth:
+        secret:
+          name: webhook-hmac-secret
+          key: secret
 
 ---
 # Calendar EventSource — scheduled platform operations
@@ -37,4 +65,14 @@ spec:
 
     monthly-secret-rotation:
       schedule: "0 2 1 * *"
+      timezone: "UTC"
+
+    # Graceful scheduled suspend — triggers cluster-suspend WorkflowTemplate (drain + notify + audit trail)
+    # EventBridge also fires the Lambda independently on the same schedule (hard path, no drain)
+    cluster-suspend-schedule:
+      schedule: "0 20 * * 1-5"   # 20:00 UTC weekdays
+      timezone: "UTC"
+
+    cluster-resume-schedule:
+      schedule: "0 7 * * 1-5"    # 07:00 UTC weekdays
       timezone: "UTC"
