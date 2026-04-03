@@ -13,6 +13,47 @@ resource "aws_kms_alias" "eks" {
   target_key_id = aws_kms_key.eks.key_id
 }
 
+# ── Node group IAM roles ──────────────────────────────────────────────────────
+# Pre-created outside the EKS module so their ARNs are known at plan time.
+# terraform-aws-eks merges node group role ARNs into local.merged_access_entries
+# and uses that map as the for_each source for aws_eks_access_entry.  When the
+# roles are created inside the module on a fresh apply the ARNs are unknown,
+# making every for_each key unknown and crashing the plan.  Passing a known
+# iam_role_arn with create_iam_role = false bypasses that path entirely.
+
+resource "aws_iam_role" "node_group" {
+  for_each = toset(["system", "workload"])
+
+  name = "${var.cluster_name}-${each.key}-node"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_group_worker_node" {
+  for_each   = aws_iam_role.node_group
+  role       = each.value.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "node_group_cni" {
+  for_each   = aws_iam_role.node_group
+  role       = each.value.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "node_group_ecr" {
+  for_each   = aws_iam_role.node_group
+  role       = each.value.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
 # ── EKS cluster ───────────────────────────────────────────────────────────────
 
 module "eks" {
@@ -124,6 +165,9 @@ module "eks" {
       name           = "${var.cluster_name}-system"
       instance_types = ["m5.large"]
 
+      create_iam_role = false
+      iam_role_arn    = aws_iam_role.node_group["system"].arn
+
       min_size     = 2
       max_size     = 2
       desired_size = 2
@@ -152,6 +196,9 @@ module "eks" {
     workload = {
       name           = "${var.cluster_name}-workload"
       instance_types = ["t3.medium", "m5.large", "m5.xlarge"]
+
+      create_iam_role = false
+      iam_role_arn    = aws_iam_role.node_group["workload"].arn
 
       min_size     = 0
       max_size     = 20

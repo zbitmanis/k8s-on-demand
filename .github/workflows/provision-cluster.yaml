@@ -62,7 +62,7 @@ jobs:
       # aws_eks_access_entry; on a fresh apply these are unknown, causing a plan
       # error.  Pre-applying the IAM and VPC modules makes all ARNs known before
       # the EKS module runs.
-      - name: Terraform apply — foundation (IAM + VPC)
+      - name: Terraform apply — foundation (IAM + VPC + node group roles)
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
@@ -71,6 +71,10 @@ jobs:
             -auto-approve \
             -target=module.iam_management \
             -target=module.vpc \
+            -target=module.eks_cluster.aws_iam_role.node_group \
+            -target=module.eks_cluster.aws_iam_role_policy_attachment.node_group_worker_node \
+            -target=module.eks_cluster.aws_iam_role_policy_attachment.node_group_cni \
+            -target=module.eks_cluster.aws_iam_role_policy_attachment.node_group_ecr \
             -var-file=terraform.tfvars \
             -var="region=${{ vars.AWS_REGION }}" \
             -var="environment=${{ inputs.environment }}" \
