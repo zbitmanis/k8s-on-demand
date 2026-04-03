@@ -9,6 +9,18 @@ on:
         description: Release version that triggered this run (optional)
         required: false
         type: string
+      action:
+        description: "plan — detect drift only; apply — apply the plan"
+        required: false
+        type: choice
+        default: plan
+        options: [plan, apply]
+      dry_run:
+        description: "Skip state lock (useful when lock is held)"
+        required: false
+        type: choice
+        default: "false"
+        options: ["true", "false"]
 
 permissions:
   contents: read
@@ -49,15 +61,27 @@ jobs:
       - name: Terraform plan
         id: plan
         working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
         run: |
+          LOCK_FLAG=""
+          [[ "${{ inputs.dry_run }}" == "true" ]] && LOCK_FLAG="-lock=false"
           terraform plan \
             -var-file=terraform.tfvars \
             -out=plan.tfplan \
             -detailed-exitcode \
+            $LOCK_FLAG \
             2>&1 | tee plan.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         # Exit codes: 0=no changes, 1=error, 2=changes detected
         continue-on-error: true
+
+      - name: Terraform apply
+        if: inputs.action == 'apply' && steps.plan.outputs.exit_code == '2'
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
+        run: terraform apply plan.tfplan
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4

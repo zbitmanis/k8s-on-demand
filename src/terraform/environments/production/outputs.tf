@@ -43,3 +43,30 @@ output "suspend_lambda_name" {
   description = "Name of the cluster-suspend Lambda function"
   value       = module.suspend_lambda.lambda_function_name
 }
+
+# ── Google Workspace SAML federation ─────────────────────────────────────────
+
+output "google_saml_provider_arn" {
+  description = "ARN of the Google Workspace SAML provider — used as the Role ARN prefix in the SAML attribute mapping"
+  value       = module.iam_management.google_saml_provider_arn
+}
+
+output "ops_cluster_access_role_arn" {
+  description = "IAM role ARN engineers assume via saml2aws — used as the Role ARN suffix in the SAML attribute mapping"
+  value       = module.iam_management.ops_cluster_access_role_arn
+}
+
+output "saml_acs_url" {
+  description = "SAML ACS URL to enter in Google Admin Console when creating the custom SAML app"
+  value       = "https://signin.aws.amazon.com/saml"
+}
+
+output "saml_sp_entity_id" {
+  description = "SP Entity ID to enter in Google Admin Console when creating the custom SAML app"
+  value       = "urn:amazon:webservices"
+}
+
+output "saml_role_attribute_value" {
+  description = "Full value for the https://aws.amazon.com/SAML/Attributes/Role attribute mapping in Google Admin Console: <saml_provider_arn>,<role_arn>"
+  value       = "${module.iam_management.google_saml_provider_arn},${module.iam_management.ops_cluster_access_role_arn}"
+}

@@ -3,6 +3,12 @@ name: PR Validation
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: "Tenant ID to validate (leave empty to validate all)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +21,7 @@ jobs:
   commit-lint:
     name: Lint PR title (conventional commits)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     steps:
       - name: Validate PR title
         uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017  # v5.5.3
@@ -73,8 +80,16 @@ jobs:
       - name: Find changed tenant configs
         id: changed
         run: |
-          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
-            | grep -E '^tenants/[^/]+/config\.yaml$' || true)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ -n "${{ inputs.tenant_id }}" ]]; then
+              FILES="tenants/${{ inputs.tenant_id }}/config.yaml"
+            else
+              FILES=$(find tenants -name "config.yaml" | sort | tr '\n' ' ')
+            fi
+          else
+            FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+              | grep -E '^tenants/[^/]+/config\.yaml$' || true)
+          fi
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES"     >> "$GITHUB_OUTPUT"
           echo "EOF"        >> "$GITHUB_OUTPUT"
@@ -130,6 +145,7 @@ jobs:
   label-version-bump:
     name: Label version bump
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     needs: commit-lint
     permissions:
       pull-requests: write

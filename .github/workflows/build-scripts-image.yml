@@ -3,6 +3,12 @@ name: Build and push platform-scripts image
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to build and push (e.g. dev, sha-abc123)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,16 +26,21 @@ jobs:
       - name: Check if src/scripts changed since last release
         id: check
         run: |
-          PREV=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)
-          if [ -z "$PREV" ]; then
-            echo "No previous tag found — treating scripts as changed."
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual trigger — skipping change check."
             echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$PREV" "${{ github.ref_name }}" -- src/scripts/; then
-            echo "src/scripts unchanged since $PREV — skipping image build."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "src/scripts changed since $PREV — building image."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            PREV=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)
+            if [ -z "$PREV" ]; then
+              echo "No previous tag found — treating scripts as changed."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            elif git diff --quiet "$PREV" "${{ github.ref_name }}" -- src/scripts/; then
+              echo "src/scripts unchanged since $PREV — skipping image build."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "src/scripts changed since $PREV — building image."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Log in to Docker Hub
@@ -42,10 +53,13 @@ jobs:
       - name: Build and push
         if: steps.check.outputs.changed == 'true'
         env:
-          IMAGE:  ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REGISTRY }}
-          TAG:   ${{ github.ref_name }}
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REGISTRY }}
+          TAG:   ${{ inputs.image_tag || github.ref_name }}
         run: |
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" src/scripts/
+          docker build -t "$IMAGE:$TAG" src/scripts/
           docker push "$IMAGE:$TAG"
-          docker push "$IMAGE:latest"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
           echo "Pushed $IMAGE:$TAG"
