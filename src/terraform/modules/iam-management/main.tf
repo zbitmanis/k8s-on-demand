@@ -2,14 +2,8 @@ data "aws_caller_identity" "current" {}
 
 # ── GitHub Actions OIDC provider ─────────────────────────────────────────────
 
-data "tls_certificate" "github_actions" {
+data "aws_iam_openid_connect_provider" "github_actions" {
   url = "https://token.actions.githubusercontent.com"
-}
-
-resource "aws_iam_openid_connect_provider" "github_actions" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
 }
 
 # ── platform-terraform-execution ─────────────────────────────────────────────
@@ -21,7 +15,7 @@ data "aws_iam_policy_document" "terraform_execution_trust" {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github_actions.arn]
     }
     condition {
       test     = "StringEquals"

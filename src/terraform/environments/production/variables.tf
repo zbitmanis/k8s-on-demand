@@ -92,7 +92,8 @@ variable "artifacts_bucket_name" {
 variable "google_saml_metadata_xml" {
   type        = string
   sensitive   = true
-  description = "Google Workspace SAML IdP metadata XML. Set via GitHub Actions secret GOOGLE_SAML_METADATA_XML passed as TF_VAR_google_saml_metadata_xml."
+  default     = null
+  description = "Google Workspace SAML IdP metadata XML. When null the SAML provider and ops-cluster-access role are skipped. Set via GitHub Actions secret GOOGLE_SAML_METADATA_XML."
 }
 
 variable "google_workspace_domain" {
