@@ -82,6 +82,7 @@ jobs:
       - name: Trigger terraform plan on new release
         run: |
           gh workflow run terraform-plan.yml \
+            --repo "${{ github.repository }}" \
             --ref "v${{ needs.release.outputs.version }}" \
             --field version="${{ needs.release.outputs.version }}"
         env:
