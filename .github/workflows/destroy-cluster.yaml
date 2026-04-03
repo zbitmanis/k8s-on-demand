@@ -134,6 +134,7 @@ jobs:
           terraform destroy \
             -auto-approve \
             -var-file=terraform.tfvars \
+            -var="region=${{ vars.AWS_REGION }}" \
             -var="environment=${{ inputs.environment }}"
 
   # ── 3. Notify ─────────────────────────────────────────────────────────────

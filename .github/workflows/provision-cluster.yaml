@@ -57,7 +57,26 @@ jobs:
             -backend-config="dynamodb_table=${{ vars.TERRAFORM_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
-      - name: Terraform apply
+      # Phase 1: apply foundation (IAM roles + VPC) so their ARNs are known state.
+      # terraform-aws-eks uses managed node group role ARNs as for_each keys in
+      # aws_eks_access_entry; on a fresh apply these are unknown, causing a plan
+      # error.  Pre-applying the IAM and VPC modules makes all ARNs known before
+      # the EKS module runs.
+      - name: Terraform apply — foundation (IAM + VPC)
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
+        run: |
+          terraform apply \
+            -auto-approve \
+            -target=module.iam_management \
+            -target=module.vpc \
+            -var-file=terraform.tfvars \
+            -var="region=${{ vars.AWS_REGION }}" \
+            -var="environment=${{ inputs.environment }}" \
+            -var="github_org=$(echo '${{ github.repository }}' | cut -d/ -f1)"
+
+      - name: Terraform apply — full
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
@@ -65,6 +84,7 @@ jobs:
           terraform apply \
             -auto-approve \
             -var-file=terraform.tfvars \
+            -var="region=${{ vars.AWS_REGION }}" \
             -var="environment=${{ inputs.environment }}" \
             -var="github_org=$(echo '${{ github.repository }}' | cut -d/ -f1)"
 
