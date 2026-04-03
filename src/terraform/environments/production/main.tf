@@ -37,6 +37,7 @@ module "eks_cluster" {
   workflow_runner_role_arn    = module.iam_management.workflow_runner_role_arn
   break_glass_role_arn        = module.iam_management.break_glass_role_arn
   ops_cluster_access_role_arn = module.iam_management.ops_cluster_access_role_arn
+  include_ops_access          = var.google_saml_metadata_xml != null
 }
 
 module "eks_addons" {

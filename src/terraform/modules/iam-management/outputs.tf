@@ -29,11 +29,11 @@ output "break_glass_role_arn" {
 }
 
 output "google_saml_provider_arn" {
-  description = "ARN of the Google Workspace SAML provider"
-  value       = aws_iam_saml_provider.google_workspace.arn
+  description = "ARN of the Google Workspace SAML provider, or empty string if SAML not configured"
+  value       = length(aws_iam_saml_provider.google_workspace) > 0 ? aws_iam_saml_provider.google_workspace[0].arn : ""
 }
 
 output "ops_cluster_access_role_arn" {
-  description = "IAM role ARN for engineer kubectl access via Google Workspace SAML (saml2aws)"
-  value       = aws_iam_role.ops_cluster_access.arn
+  description = "IAM role ARN for engineer kubectl access via Google Workspace SAML, or empty string if SAML not configured"
+  value       = length(aws_iam_role.ops_cluster_access) > 0 ? aws_iam_role.ops_cluster_access[0].arn : ""
 }
