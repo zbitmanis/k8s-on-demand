@@ -68,6 +68,7 @@ jobs:
           [[ "${{ inputs.dry_run }}" == "true" ]] && LOCK_FLAG="-lock=false"
           terraform plan \
             -var-file=terraform.tfvars \
+            -var="region=${{ vars.AWS_REGION }}" \
             -out=plan.tfplan \
             -detailed-exitcode \
             $LOCK_FLAG \

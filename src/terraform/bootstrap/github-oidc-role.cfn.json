@@ -292,6 +292,7 @@
                     "iam:PassRole"
                   ],
                   "Resource": [
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/${RoleName}" },
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/platform-*" },
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-external-secrets" },
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-thanos-sidecar" },
