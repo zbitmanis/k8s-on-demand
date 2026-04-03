@@ -139,6 +139,7 @@ resource "aws_iam_role_policy" "workflow_runner" {
 # Entity ID in Google Admin: urn:amazon:webservices
 
 resource "aws_iam_saml_provider" "google_workspace" {
+  count                  = var.google_saml_metadata_xml != null ? 1 : 0
   name                   = "google-workspace-saml"
   saml_metadata_document = var.google_saml_metadata_xml
 }
@@ -150,14 +151,17 @@ resource "aws_iam_saml_provider" "google_workspace" {
 # Access scope: SAML:hd restricted to company domain — no per-group enforcement
 # needed for dev/sandbox. Kubernetes RBAC (platform:ops ClusterRoleBinding) is
 # the effective permissions boundary.
+# Only created when google_saml_metadata_xml is provided.
 
 data "aws_iam_policy_document" "ops_cluster_access_trust" {
+  count = var.google_saml_metadata_xml != null ? 1 : 0
+
   statement {
     actions = ["sts:AssumeRoleWithSAML"]
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_saml_provider.google_workspace.arn]
+      identifiers = [aws_iam_saml_provider.google_workspace[0].arn]
     }
 
     # Required by AWS for all direct IAM SAML role assumptions.
@@ -177,8 +181,9 @@ data "aws_iam_policy_document" "ops_cluster_access_trust" {
 }
 
 resource "aws_iam_role" "ops_cluster_access" {
+  count                = var.google_saml_metadata_xml != null ? 1 : 0
   name                 = "platform-ops-cluster-access"
-  assume_role_policy   = data.aws_iam_policy_document.ops_cluster_access_trust.json
+  assume_role_policy   = data.aws_iam_policy_document.ops_cluster_access_trust[0].json
   max_session_duration = 28800  # 8 hours — covers a full working day on dev/sandbox
 }
 

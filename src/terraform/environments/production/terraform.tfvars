@@ -1,10 +1,10 @@
-region             = "eu-west-1"
+region             = "eu-central-1"
 environment        = "staging"
-cluster_name       = "platform-dev"
+cluster_name       = "platfrom-dev"
 kubernetes_version = "1.29"
 
-vpc_cidr = "10.0.0.0/16"
-availability_zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+vpc_cidr = "10.28.0.0/20"
+availability_zones = ["eu-central-1a", "eu-west-1b", "eu-west-1c"]
 
 github_org  = "<your-github-org>"
 github_repo = "k8s-on-demand"

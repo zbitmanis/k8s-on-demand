@@ -130,6 +130,8 @@ jobs:
 
       - name: Terraform destroy
         working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_google_saml_metadata_xml: ${{ secrets.GOOGLE_SAML_METADATA_XML }}
         run: |
           terraform destroy \
             -auto-approve \
@@ -157,6 +159,10 @@ jobs:
             TEXT=":x: Cluster destruction failed (environment: *${{ inputs.environment }}*). Manual cleanup may be required.\nWorkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
+            exit 0
+          fi
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$TEXT\",\"mrkdwn_in\":[\"text\"]}]}"

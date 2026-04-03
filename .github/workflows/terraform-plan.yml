@@ -99,6 +99,10 @@ jobs:
           PLAN_SUMMARY=$(grep -E '^Plan:|^No changes' ${{ env.TF_DIR }}/plan.txt | head -1 || echo "See artifact for details")
           TRIGGER="${{ inputs.version && format('Release v{0}', inputs.version) || 'Scheduled drift check' }}"
 
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping Slack notification"
+            exit 0
+          fi
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{
