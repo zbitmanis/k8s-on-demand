@@ -98,9 +98,14 @@ module "eks" {
   #   Use kubernetes_groups so downstream Kubernetes RBAC (ClusterRoleBindings
   #   in the platform-rbac app) controls exactly what each component can do.
   #   Prefer fine-grained RBAC over EKS managed policies for in-cluster roles.
-  # access_entries is a map(any) — use merge() to conditionally include break-glass
-  access_entries = merge(
-    {
+  # IMPORTANT: never condition access entry inclusion on role ARNs.
+  # ARNs are (known after apply) on a fresh cluster; `arn != ""` is then an
+  # unknown bool; a ternary on an unknown condition returns an unknown map;
+  # merge() of an unknown map makes local.merged_access_entries entirely
+  # unknown, and for_each crashes at plan time.
+  # Use separate boolean variables (always known at plan time) instead.
+  access_entries = {
+    for k, v in {
       # GitHub Actions Terraform execution role — cluster-admin for Day 0 bootstrap.
       # Assumed via OIDC, no static credentials.  Only entry with cluster-admin.
       terraform = {
@@ -109,9 +114,7 @@ module "eks" {
         policy_associations = {
           cluster_admin = {
             policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-            access_scope = {
-              type = "cluster"   # cluster-wide, not namespace-scoped
-            }
+            access_scope = { type = "cluster" }
           }
         }
       }
@@ -130,12 +133,9 @@ module "eks" {
         principal_arn     = var.workflow_runner_role_arn
         type              = "STANDARD"
       }
-    },
 
-    # Break-glass access entry — only included when the ARN is provided.
-    # MFA requirement is enforced on the IAM role trust policy (iam-management module).
-    var.break_glass_role_arn != "" ? {
-      break_glass = {
+      # Break-glass access entry — MFA enforced on the IAM role trust policy.
+      break_glass = var.include_break_glass ? {
         principal_arn = var.break_glass_role_arn
         type          = "STANDARD"
         policy_associations = {
@@ -144,20 +144,17 @@ module "eks" {
             access_scope = { type = "cluster" }
           }
         }
-      }
-    } : {},
+      } : null
 
-    # Engineer kubectl access via Google Workspace SAML (saml2aws).
-    # Mapped to Kubernetes RBAC group platform:ops — not EKS managed policy.
-    # ClusterRoleBinding in platform-rbac app controls actual permissions.
-    var.ops_cluster_access_role_arn != "" ? {
-      ops_cluster_access = {
+      # Engineer kubectl access via Google Workspace SAML (saml2aws).
+      # Mapped to Kubernetes RBAC group platform:ops — not EKS managed policy.
+      ops_cluster_access = var.include_ops_access ? {
         kubernetes_groups = ["platform:ops"]
         principal_arn     = var.ops_cluster_access_role_arn
         type              = "STANDARD"
-      }
-    } : {}
-  )
+      } : null
+    } : k => v if v != null
+  }
 
   eks_managed_node_groups = {
     # System node group — runs platform components (ArgoCD, Prometheus, Gatekeeper, etc.)

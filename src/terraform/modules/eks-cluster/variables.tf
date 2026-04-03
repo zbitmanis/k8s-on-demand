@@ -50,10 +50,22 @@ variable "break_glass_role_arn" {
   default     = ""
 }
 
+variable "include_break_glass" {
+  type        = bool
+  description = "Whether to create an EKS access entry for the break-glass role. Must be a literal bool — never derive from the ARN, as unknown ARNs make for_each keys unknown at plan time."
+  default     = true
+}
+
 variable "ops_cluster_access_role_arn" {
   type        = string
   description = "IAM role ARN for engineer kubectl access via Google Workspace SAML (saml2aws). Mapped to Kubernetes RBAC group platform:ops — permissions controlled by ClusterRoleBinding in platform-rbac app."
   default     = ""
+}
+
+variable "include_ops_access" {
+  type        = bool
+  description = "Whether to create an EKS access entry for the ops SAML role. Must be a literal bool — never derive from the ARN, as unknown ARNs make for_each keys unknown at plan time."
+  default     = true
 }
 
 variable "cluster_endpoint_public_access" {
