@@ -54,16 +54,16 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-region:     ${{ vars.AWS_REGION }}
 
       - name: Terraform init (to read cluster name from state)
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
             -backend-config="key=cluster/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TERRAFORM_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
       - name: Get cluster name from state
@@ -76,7 +76,7 @@ jobs:
         run: |
           aws eks update-kubeconfig \
             --name "${{ steps.cluster.outputs.name }}" \
-            --region "${{ secrets.AWS_REGION }}" || true
+            --region "${{ vars.AWS_REGION }}" || true
 
       - name: Delete LoadBalancer services
         if: steps.cluster.outputs.name != ''
@@ -116,16 +116,16 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-region:     ${{ vars.AWS_REGION }}
 
       - name: Terraform init
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
             -backend-config="key=cluster/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TERRAFORM_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
       - name: Terraform destroy

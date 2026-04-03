@@ -45,16 +45,16 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-region:     ${{ vars.AWS_REGION }}
 
       - name: Terraform init
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
             -backend-config="key=cluster/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TERRAFORM_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
       - name: Terraform apply
@@ -92,13 +92,13 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-region:     ${{ vars.AWS_REGION }}
 
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
             --name "${{ needs.terraform-apply.outputs.cluster_name }}" \
-            --region "${{ secrets.AWS_REGION }}"
+            --region "${{ vars.AWS_REGION }}"
 
       - name: Create argocd namespace
         run: kubectl create namespace "${{ env.ARGOCD_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
@@ -162,21 +162,21 @@ jobs:
 
           # thanos-sidecar: inject metrics bucket
           argocd app set thanos-sidecar \
-            --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ secrets.AWS_REGION }}\n" \
+            --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ vars.AWS_REGION }}\n" \
             --helm-set "thanos.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
             2>/dev/null || true
 
           # argo-workflows: inject artifacts bucket, region, and runner role
           argocd app set argo-workflows \
             --helm-set "argo-workflows.artifactRepository.s3.bucket=${ARTIFACTS_BUCKET}" \
-            --helm-set "argo-workflows.artifactRepository.s3.region=${{ secrets.AWS_REGION }}" \
+            --helm-set "argo-workflows.artifactRepository.s3.region=${{ vars.AWS_REGION }}" \
             --helm-set "argo-workflows.artifactRepository.s3.roleARN=${WORKFLOW_RUNNER_ARN}" \
             2>/dev/null || true
 
           # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
           argocd app set platform-rbac \
             --helm-set "workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
-            --helm-set "awsRegion=${{ secrets.AWS_REGION }}" \
+            --helm-set "awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "suspendLambdaName=${SUSPEND_LAMBDA_NAME}" \
             --helm-set "github.org=${GITHUB_ORG}" \
             --helm-set "github.repo=${GITHUB_REPO}" \
@@ -195,13 +195,13 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-region:     ${{ vars.AWS_REGION }}
 
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
             --name "${{ needs.terraform-apply.outputs.cluster_name }}" \
-            --region "${{ secrets.AWS_REGION }}"
+            --region "${{ vars.AWS_REGION }}"
 
       - name: Install ArgoCD CLI
         run: |
@@ -273,7 +273,7 @@ jobs:
         run: |
           if [[ "${{ needs.wait-healthy.result }}" == "success" ]]; then
             COLOR="good"
-            TEXT=":white_check_mark: Cluster *${{ needs.terraform-apply.outputs.cluster_name }}* provisioned and healthy.\nEndpoint: \`${{ needs.terraform-apply.outputs.cluster_endpoint }}\`\n\`aws eks update-kubeconfig --name ${{ needs.terraform-apply.outputs.cluster_name }} --region ${{ secrets.AWS_REGION }}\`"
+            TEXT=":white_check_mark: Cluster *${{ needs.terraform-apply.outputs.cluster_name }}* provisioned and healthy.\nEndpoint: \`${{ needs.terraform-apply.outputs.cluster_endpoint }}\`\n\`aws eks update-kubeconfig --name ${{ needs.terraform-apply.outputs.cluster_name }} --region ${{ vars.AWS_REGION }}\`"
           else
             COLOR="danger"
             TEXT=":x: Cluster provisioning failed for *${{ needs.terraform-apply.outputs.cluster_name }}*. Check the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
