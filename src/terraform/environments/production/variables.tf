@@ -1,7 +1,7 @@
 variable "region" {
   type        = string
   description = "AWS region for the cluster"
-  default     = "eu-west-1"
+  default     = "eu-central-1"
 }
 
 variable "environment" {
@@ -36,7 +36,7 @@ variable "vpc_cidr" {
 variable "availability_zones" {
   type        = list(string)
   description = "List of AZs to use (must be 3)"
-  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+  default     = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]
 
   validation {
     condition     = length(var.availability_zones) == 3

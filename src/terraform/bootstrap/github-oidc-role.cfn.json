@@ -203,6 +203,12 @@
                     "ec2:CreateLaunchTemplateVersion",
                     "ec2:DeleteLaunchTemplateVersions",
                     "ec2:ModifyLaunchTemplate",
+                    "ec2:CreateNetworkAcl",
+                    "ec2:DeleteNetworkAcl",
+                    "ec2:CreateNetworkAclEntry",
+                    "ec2:DeleteNetworkAclEntry",
+                    "ec2:ReplaceNetworkAclEntry",
+                    "ec2:ReplaceNetworkAclAssociation",
                     "ec2:CreateTags",
                     "ec2:DeleteTags"
                   ],
@@ -332,6 +338,7 @@
                     "iam:CreateOpenIDConnectProvider",
                     "iam:DeleteOpenIDConnectProvider",
                     "iam:GetOpenIDConnectProvider",
+                    "iam:ListOpenIDConnectProviders",
                     "iam:UpdateOpenIDConnectProviderThumbprint",
                     "iam:AddClientIDToOpenIDConnectProvider",
                     "iam:RemoveClientIDFromOpenIDConnectProvider",
@@ -425,9 +432,10 @@
                     "logs:UntagResource",
                     "logs:ListTagsForResource"
                   ],
-                  "Resource": {
-                    "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*-cluster-suspend:*"
-                  }
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*-cluster-suspend:*" },
+                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/eks/*:*" }
+                  ]
                 },
 
                 {
