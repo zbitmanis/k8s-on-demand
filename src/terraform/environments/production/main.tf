@@ -12,8 +12,6 @@ module "iam_management" {
 
   cluster_name          = var.cluster_name
   region                = var.region
-  github_org            = var.github_org
-  github_repo           = var.github_repo
   metrics_bucket_name   = var.metrics_bucket_name
   artifacts_bucket_name = var.artifacts_bucket_name
 
@@ -32,7 +30,7 @@ module "eks_cluster" {
   intra_subnet_ids   = module.vpc.intra_subnet_ids
 
   cluster_endpoint_public_access = var.cluster_endpoint_public_access
-  terraform_role_arn          = module.iam_management.terraform_execution_role_arn
+  terraform_role_arn          = var.terraform_execution_role_arn
   argocd_role_arn             = module.iam_management.argocd_role_arn
   workflow_runner_role_arn    = module.iam_management.workflow_runner_role_arn
   break_glass_role_arn        = module.iam_management.break_glass_role_arn

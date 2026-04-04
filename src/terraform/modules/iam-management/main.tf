@@ -1,50 +1,5 @@
 data "aws_caller_identity" "current" {}
 
-# ── GitHub Actions OIDC provider ─────────────────────────────────────────────
-
-data "aws_iam_openid_connect_provider" "github_actions" {
-  url = "https://token.actions.githubusercontent.com"
-}
-
-# ── platform-terraform-execution ─────────────────────────────────────────────
-# Used by GitHub Actions to run terraform plan/apply/destroy.
-# Trusted only for the specific org/repo via OIDC.
-
-data "aws_iam_policy_document" "terraform_execution_trust" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github_actions.arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_org}/${var.github_repo}:*"]
-    }
-  }
-}
-
-resource "aws_iam_role" "terraform_execution" {
-  name               = "platform-terraform-execution"
-  assume_role_policy = data.aws_iam_policy_document.terraform_execution_trust.json
-
-  lifecycle {
-    # Prevent the role from modifying its own trust policy
-    ignore_changes = [assume_role_policy]
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "terraform_execution_admin" {
-  role       = aws_iam_role.terraform_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
-}
-
 # ── platform-argocd-cluster-manager ──────────────────────────────────────────
 # Assumed by ArgoCD via IRSA to register/describe EKS clusters.
 # OIDC trust is configured after EKS cluster creation (in eks-cluster module).

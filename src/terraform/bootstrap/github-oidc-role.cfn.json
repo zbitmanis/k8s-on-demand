@@ -381,6 +381,7 @@
                     "lambda:DeleteFunction",
                     "lambda:GetFunction",
                     "lambda:GetFunctionConfiguration",
+                    "lambda:GetFunctionCodeSigningConfig",
                     "lambda:UpdateFunctionCode",
                     "lambda:UpdateFunctionConfiguration",
                     "lambda:TagResource",
@@ -417,12 +418,20 @@
                 },
 
                 {
+                  "Sid": "CloudWatchLogsDescribe",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:DescribeLogGroups"
+                  ],
+                  "Resource": "*"
+                },
+
+                {
                   "Sid": "CloudWatchLogs",
                   "Effect": "Allow",
                   "Action": [
                     "logs:CreateLogGroup",
                     "logs:DeleteLogGroup",
-                    "logs:DescribeLogGroups",
                     "logs:PutRetentionPolicy",
                     "logs:DeleteRetentionPolicy",
                     "logs:TagLogGroup",
@@ -433,8 +442,8 @@
                     "logs:ListTagsForResource"
                   ],
                   "Resource": [
-                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*-cluster-suspend:*" },
-                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/eks/*:*" }
+                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/*-cluster-suspend*" },
+                    { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/eks/*" }
                   ]
                 },
 
