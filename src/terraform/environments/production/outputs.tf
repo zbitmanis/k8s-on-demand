@@ -25,8 +25,8 @@ output "vpc_id" {
 }
 
 output "terraform_execution_role_arn" {
-  description = "IAM role ARN for GitHub Actions Terraform execution"
-  value       = module.iam_management.terraform_execution_role_arn
+  description = "ARN of the GHA execution role (from CFN bootstrap)"
+  value       = var.terraform_execution_role_arn
 }
 
 output "tenant_role_arns" {

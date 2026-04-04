@@ -30,7 +30,7 @@ variable "kubernetes_version" {
 variable "vpc_cidr" {
   type        = string
   description = "CIDR block for the VPC"
-  default     = "10.0.0.0/16"
+  default     = "10.28.0.0/22"
 }
 
 variable "availability_zones" {
@@ -68,15 +68,9 @@ variable "cluster_endpoint_public_access" {
   default     = true
 }
 
-variable "github_org" {
+variable "terraform_execution_role_arn" {
   type        = string
-  description = "GitHub organisation name for OIDC trust policy"
-}
-
-variable "github_repo" {
-  type        = string
-  description = "GitHub repository name for OIDC trust policy"
-  default     = "k8s-on-demand"
+  description = "ARN of the GHA execution role created by the CFN bootstrap (github-oidc-role.cfn.json). Used as cluster-admin EKS access entry."
 }
 
 variable "metrics_bucket_name" {

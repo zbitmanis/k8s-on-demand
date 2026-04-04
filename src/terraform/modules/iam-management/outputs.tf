@@ -1,13 +1,3 @@
-output "github_oidc_provider_arn" {
-  description = "ARN of the GitHub Actions OIDC provider"
-  value       = data.aws_iam_openid_connect_provider.github_actions.arn
-}
-
-output "terraform_execution_role_arn" {
-  description = "IAM role ARN for GitHub Actions Terraform execution"
-  value       = aws_iam_role.terraform_execution.arn
-}
-
 output "argocd_role_arn" {
   description = "IAM role ARN for ArgoCD cluster manager"
   value       = aws_iam_role.argocd.arn

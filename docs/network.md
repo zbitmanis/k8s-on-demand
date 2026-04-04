@@ -16,7 +16,7 @@ skinparam defaultFontName Arial
 skinparam rectangleBorderColor #555555
 skinparam rectangleBackgroundColor #F5F5F5
 
-rectangle "Cluster VPC  10.0.0.0/16" {
+rectangle "Cluster VPC  10.0.0.0/22" {
   rectangle "AZ-a" {
     rectangle "Public  10.0.0.0/20" as pub_a #LightYellow
     rectangle "Private  10.0.64.0/19" as priv_a #LightBlue

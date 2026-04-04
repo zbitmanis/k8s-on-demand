@@ -1,7 +1,11 @@
-# VPC layout (10.0.0.0/16, 3 AZs):
-#   Public  /20 × 3  — NAT gateway (single), internet-facing ALBs
-#   Private /19 × 3  — system and workload node groups
-#   Intra   /24 × 3  — EKS control plane ENIs (no internet route)
+# VPC layout (10.28.0.0/22, 3 AZs):
+#   Public  /26 × 3  — NAT gateway (single), internet-facing ALBs (59 usable IPs each)
+#   Private /25 × 3  — system and workload node groups + pods (123 usable IPs each)
+#   Intra   /28 × 3  — EKS control plane ENIs only, no internet route (11 usable IPs each)
+#
+# IP budget: ~624 IPs assigned, ~400 unallocated (reserved for future subnet tiers).
+# Risk: VPC CNI pre-warms a full ENI per node by default. At max scale (20 nodes)
+# this consumes ~750 IPs. Mitigate by setting WARM_IP_TARGET=2 on aws-node DaemonSet.
 #
 # Single NAT gateway: reduces cost ~$65/month vs one-per-AZ.
 # Trade-off: cross-AZ traffic from private subnets in non-gateway AZs incurs
@@ -10,10 +14,9 @@
 # for production HA.
 
 locals {
-  # Derive subnet CIDRs from the VPC CIDR base (assumes 10.0.0.0/16)
-  public_subnets  = ["10.0.0.0/20", "10.0.16.0/20", "10.0.32.0/20"]
-  private_subnets = ["10.0.64.0/19", "10.0.96.0/19", "10.0.128.0/19"]
-  intra_subnets   = ["10.0.160.0/24", "10.0.161.0/24", "10.0.162.0/24"]
+  public_subnets  = ["10.28.0.0/26",  "10.28.0.64/26",  "10.28.0.128/26"]
+  private_subnets = ["10.28.1.0/25",  "10.28.1.128/25", "10.28.2.0/25"]
+  intra_subnets   = ["10.28.3.0/28",  "10.28.3.16/28",  "10.28.3.32/28"]
 }
 
 module "vpc" {
