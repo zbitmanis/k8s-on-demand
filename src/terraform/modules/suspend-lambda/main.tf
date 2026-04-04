@@ -113,7 +113,6 @@ resource "aws_lambda_function" "cluster_suspend" {
   environment {
     variables = {
       CLUSTER_NAME           = var.cluster_name
-      AWS_REGION             = var.aws_region   # explicit — boto3 needs it
       SSM_PREFIX             = local.ssm_prefix
       WAIT_FOR_NODES         = tostring(var.wait_for_nodes_on_resume)
       NODE_READY_TIMEOUT_SEC = tostring(var.node_ready_timeout_sec)
