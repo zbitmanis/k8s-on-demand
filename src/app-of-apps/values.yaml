@@ -3,9 +3,9 @@ spec:
     server: https://kubernetes.default.svc  # Single shared cluster
 
   default:
-    # Placeholder substituted at deploy time by provision-cluster.yaml via sed.
+    # Injected at deploy time via Helm parameter in app-of-apps-application.yaml.
     # For offline helm template/lint runs pass: --set spec.default.repoURL=https://github.com/org/repo.git
-    repoURL: https://github.com/${GITHUB_REPOSITORY}.git
+    repoURL: ""
     helm:
       valueFiles:
         - values.yaml
