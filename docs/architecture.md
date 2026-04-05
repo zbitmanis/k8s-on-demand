@@ -269,6 +269,22 @@ IRSA role (`<cluster-name>-cluster-autoscaler`) is created in `eks-addons` modul
 (`SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup`) conditioned on the CA discovery ASG tags,
 preventing the role from touching any other ASG in the account.
 
+### Cluster-wide resources via singleton Kustomize Application
+
+`src/applications/cluster-resources/` is a Kustomize app that owns all cluster-scoped Kubernetes
+resources (StorageClasses, PriorityClasses, etc.). ArgoCD Application: `cluster-resources`.
+
+**Rules:**
+- Do NOT add StorageClasses or other cluster-scoped resources to Terraform — Terraform owns AWS infrastructure, not Kubernetes objects.
+- Do NOT create cluster-scoped resources inside individual app Helm charts — ownership ambiguity and duplication.
+- All cluster-scoped Kubernetes resources go in `src/applications/cluster-resources/`. Add a manifest, reference it in `kustomization.yaml`. No other files change.
+
+**Sync wave `-1`:** `cluster-resources` syncs before all other apps (wave 0). Required because thanos-sidecar and prometheus create PVCs on first sync — StorageClass must exist first.
+
+**`Replace=true`:** StorageClass fields are immutable. ArgoCD uses delete-then-create instead of patch. Safe — existing PVCs keep their binding.
+
+**Current contents:** `gp3` StorageClass (EBS CSI, `WaitForFirstConsumer`, encrypted, default class).
+
 ### On-demand cost saving via full cluster lifecycle (development use)
 
 The cluster is provisioned at the start of a work session and destroyed when done. This achieves
