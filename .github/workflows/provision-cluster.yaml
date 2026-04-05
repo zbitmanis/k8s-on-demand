@@ -281,7 +281,7 @@ jobs:
             --password "$ARGOCD_PASS" \
             --insecure
 
-          EXPECTED_APPS="aws-load-balancer-controller cert-manager external-secrets-operator gatekeeper gatekeeper-policies ingress-nginx prometheus thanos-sidecar argo-workflows argo-events platform-rbac"
+          EXPECTED_APPS="aws-load-balancer-controller cert-manager external-secrets-operator gatekeeper gatekeeper-policies ingress-nginx prometheus thanos-sidecar argo-workflows argo-events platform-rbac cluster-autoscaler"
           TIMEOUT=1200  # 20 minutes
           ELAPSED=0
 
