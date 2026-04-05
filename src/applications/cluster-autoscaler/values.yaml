@@ -5,13 +5,13 @@ cluster-autoscaler:
 
   awsRegion: ""
 
-  serviceAccount:
-    create: true
-    annotations:
-      # IRSA role ARN — injected at bootstrap via spec.source.helm.values patch on the
-      # ArgoCD Application (kubectl patch). Using inline helm values avoids --helm-set
-      # dot-escaping issues with annotation keys.
-      eks.amazonaws.com/role-arn: ""
+  rbac:
+    serviceAccount:
+      create: true
+      annotations:
+        # IRSA role ARN — injected at bootstrap via App-of-Apps helm.values.
+        # Chart uses rbac.serviceAccount.annotations (not top-level serviceAccount.annotations).
+        eks.amazonaws.com/role-arn: ""
 
   # Run on system nodes
   nodeSelector:
