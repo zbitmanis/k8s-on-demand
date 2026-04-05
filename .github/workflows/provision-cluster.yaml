@@ -28,11 +28,8 @@ jobs:
     outputs:
       cluster_name:                  ${{ steps.tf-outputs.outputs.cluster_name }}
       cluster_endpoint:              ${{ steps.tf-outputs.outputs.cluster_endpoint }}
-      workflow_runner_role_arn:      ${{ steps.tf-outputs.outputs.workflow_runner_role_arn }}
-      suspend_lambda_name:           ${{ steps.tf-outputs.outputs.suspend_lambda_name }}
       thanos_bucket:                 ${{ steps.tf-outputs.outputs.thanos_bucket }}
       artifacts_bucket:              ${{ steps.tf-outputs.outputs.artifacts_bucket }}
-      cluster_autoscaler_role_arn:   ${{ steps.tf-outputs.outputs.cluster_autoscaler_role_arn }}
 
     steps:
       - uses: actions/checkout@v4
@@ -97,9 +94,6 @@ jobs:
         run: |
           echo "cluster_name=$(terraform output -raw cluster_name)"                         >> "$GITHUB_OUTPUT"
           echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)"                 >> "$GITHUB_OUTPUT"
-          echo "workflow_runner_role_arn=$(terraform output -raw workflow_runner_role_arn 2>/dev/null || echo '')"       >> "$GITHUB_OUTPUT"
-          echo "suspend_lambda_name=$(terraform output -raw suspend_lambda_name 2>/dev/null || echo '')"             >> "$GITHUB_OUTPUT"
-          echo "cluster_autoscaler_role_arn=$(terraform output -raw cluster_autoscaler_role_arn 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
           echo "thanos_bucket=${{ secrets.THANOS_METRICS_BUCKET }}"                        >> "$GITHUB_OUTPUT"
           echo "artifacts_bucket=${{ secrets.ARGO_ARTIFACTS_BUCKET }}"                     >> "$GITHUB_OUTPUT"
 
@@ -203,11 +197,14 @@ jobs:
           CLUSTER_NAME="${{ needs.terraform-apply.outputs.cluster_name }}"
           THANOS_BUCKET="${{ needs.terraform-apply.outputs.thanos_bucket }}"
           ARTIFACTS_BUCKET="${{ needs.terraform-apply.outputs.artifacts_bucket }}"
-          WORKFLOW_RUNNER_ARN="${{ needs.terraform-apply.outputs.workflow_runner_role_arn }}"
-          SUSPEND_LAMBDA_NAME="${{ needs.terraform-apply.outputs.suspend_lambda_name }}"
-          CLUSTER_AUTOSCALER_ARN="${{ needs.terraform-apply.outputs.cluster_autoscaler_role_arn }}"
           GITHUB_ORG="$(echo '${{ github.repository }}' | cut -d/ -f1)"
           GITHUB_REPO="$(echo '${{ github.repository }}' | cut -d/ -f2)"
+
+          # Construct ARNs and resource names deterministically — avoids terraform output dependency.
+          AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          WORKFLOW_RUNNER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/platform-argo-workflow-runner"
+          CLUSTER_AUTOSCALER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-cluster-autoscaler"
+          SUSPEND_LAMBDA_NAME="${CLUSTER_NAME}-cluster-suspend"
 
           # aws-load-balancer-controller: inject cluster name
           argocd app set aws-load-balancer-controller \
@@ -237,21 +234,25 @@ jobs:
             --helm-set "github.repo=${GITHUB_REPO}" \
             || true
 
-          # cluster-autoscaler: inject cluster name, region, and IRSA role ARN
+          # cluster-autoscaler: inject cluster name and region via helm-set (no special chars)
           argocd app set cluster-autoscaler \
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
             || true
+
+          # Inject IRSA role ARN via spec.source.helm.values (inline YAML) — this is
+          # pure Helm values passed directly to helm template, avoiding --helm-set
+          # dot-escaping issues with annotation keys containing dots.
+          kubectl patch application cluster-autoscaler -n argocd --type=merge -p \
+            "{\"spec\":{\"source\":{\"helm\":{\"values\":\"cluster-autoscaler:\\n  serviceAccount:\\n    annotations:\\n      eks.amazonaws.com/role-arn: \\\"${CLUSTER_AUTOSCALER_ARN}\\\"\\n\"}}}}"
 
           kill $PF_PID 2>/dev/null || true
 
       - name: Restart cluster-autoscaler to pick up IRSA annotation
         run: |
-          # argocd app set updates the ServiceAccount annotation but does not
-          # restart existing pods. Rollout restart forces new pods so the EKS
-          # pod identity webhook injects the IRSA token.
-          # SA and Deployment are both named <release>-aws-cluster-autoscaler.
+          # argocd app set triggers a sync that updates the ServiceAccount, but the
+          # existing pod was created before the annotation was set. Restart forces
+          # new pods so the EKS pod identity webhook injects the IRSA token.
           kubectl rollout restart deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system
           kubectl rollout status deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system --timeout=120s
 

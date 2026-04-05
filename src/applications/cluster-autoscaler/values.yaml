@@ -8,7 +8,9 @@ cluster-autoscaler:
   serviceAccount:
     create: true
     annotations:
-      # IRSA role ARN injected via ArgoCD app parameter at bootstrap
+      # IRSA role ARN — injected at bootstrap via spec.source.helm.values patch on the
+      # ArgoCD Application (kubectl patch). Using inline helm values avoids --helm-set
+      # dot-escaping issues with annotation keys.
       eks.amazonaws.com/role-arn: ""
 
   # Run on system nodes
