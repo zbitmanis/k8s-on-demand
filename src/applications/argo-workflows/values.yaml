@@ -47,7 +47,8 @@ argo-workflows:
 
   artifactRepository:
     s3:
-      # Bucket, region, and roleARN injected from Terraform outputs via provision-cluster.yaml
+      # Bucket, region, and roleARN injected at bootstrap via App-of-Apps helm.values
+      # (argocd app set app-of-apps --helm-set spec.gitops.applications.argoWorkflows.*)
       bucket: ""
       endpoint: s3.amazonaws.com
       region: ""

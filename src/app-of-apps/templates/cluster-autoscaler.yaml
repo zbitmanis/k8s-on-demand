@@ -20,6 +20,13 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
+      {{- if .Values.spec.gitops.applications.clusterAutoscaler.irsaRoleArn }}
+      values: |
+        cluster-autoscaler:
+          serviceAccount:
+            annotations:
+              eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.clusterAutoscaler.irsaRoleArn | quote }}
+      {{- end }}
 {{- if .Values.spec.gitops.applications.clusterAutoscaler.isEnabledAutoSync | default false }}
   syncPolicy:
     automated: {}
