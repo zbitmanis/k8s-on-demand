@@ -46,6 +46,14 @@ thanos:
   query:
     enabled: true
     replicaCount: 1
+    autoscaling:
+      enabled: false
+      targetMemoryUtilizationPercentage: 0
+
+  queryFrontend:
+    autoscaling:
+      enabled: false
+      targetMemoryUtilizationPercentage: 0
 
   storegateway:
     enabled: true
@@ -54,6 +62,15 @@ thanos:
       enabled: true
       storageClass: gp3
       size: 2Gi
+    autoscaling:
+      enabled: false
+      targetMemoryUtilizationPercentage: 0
 
   compactor:
     enabled: false
+
+  bucket:
+    bucketweb:
+      autoscaling:
+        enabled: false
+        targetMemoryUtilizationPercentage: 0
