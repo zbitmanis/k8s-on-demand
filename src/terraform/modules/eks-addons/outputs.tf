@@ -17,3 +17,8 @@ output "thanos_role_arn" {
   description = "IAM role ARN for the Thanos sidecar"
   value       = aws_iam_role.thanos.arn
 }
+
+output "prometheus_thanos_role_arn" {
+  description = "IAM role ARN for the Prometheus Thanos sidecar container"
+  value       = aws_iam_role.prometheus_thanos.arn
+}

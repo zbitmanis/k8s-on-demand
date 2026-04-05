@@ -186,6 +186,41 @@ resource "aws_iam_role_policy" "thanos" {
   policy = data.aws_iam_policy_document.thanos_policy.json
 }
 
+# ── Prometheus Thanos sidecar IRSA role ──────────────────────────────────────
+# The Thanos sidecar container runs inside the Prometheus pod and uses the
+# prometheus-kube-prometheus-prometheus ServiceAccount (Helm release name = prometheus).
+
+data "aws_iam_policy_document" "prometheus_thanos_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:monitoring:prometheus-kube-prometheus-prometheus"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "prometheus_thanos" {
+  name               = "${var.cluster_name}-prometheus-thanos-sidecar"
+  assume_role_policy = data.aws_iam_policy_document.prometheus_thanos_trust.json
+}
+
+resource "aws_iam_role_policy" "prometheus_thanos" {
+  name   = "thanos-s3"
+  role   = aws_iam_role.prometheus_thanos.name
+  policy = data.aws_iam_policy_document.thanos_policy.json
+}
+
 # ── AWS Load Balancer Controller IRSA role ───────────────────────────────────
 
 data "aws_iam_policy_document" "lbc_trust" {
