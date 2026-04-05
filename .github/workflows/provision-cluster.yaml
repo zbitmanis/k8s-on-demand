@@ -237,9 +237,19 @@ jobs:
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
+            --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/sts-regional-endpoints=true" \
             2>/dev/null || true
 
           kill $PF_PID 2>/dev/null || true
+
+      - name: Restart IRSA-dependent deployments
+        run: |
+          # ArgoCD app set updates ServiceAccount annotations but does not restart
+          # existing pods — they were created before the IRSA annotation was set and
+          # carry no projected token.  Rollout restart forces new pods that the EKS
+          # pod identity webhook will inject with the correct IRSA credentials.
+          kubectl rollout restart deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system || true
+          kubectl rollout status deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system --timeout=120s || true
 
   # ── 3. Wait for all system apps healthy ──────────────────────────────────
   wait-healthy:

@@ -11,6 +11,8 @@ cluster-autoscaler:
     annotations:
       # IRSA role ARN injected via ArgoCD app parameter at bootstrap
       eks.amazonaws.com/role-arn: ""
+      # Use regional STS endpoint — required outside us-east-1 for IRSA token exchange
+      eks.amazonaws.com/sts-regional-endpoints: "true"
 
   # Run on system nodes
   nodeSelector:
