@@ -24,6 +24,11 @@ spec:
       values: |
         kube-prometheus-stack:
           prometheus:
+            {{- if .Values.spec.gitops.applications.prometheus.irsaRoleArn }}
+            serviceAccount:
+              annotations:
+                eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.prometheus.irsaRoleArn | quote }}
+            {{- end }}
             prometheusSpec:
               thanos:
                 objectStorageConfig:
