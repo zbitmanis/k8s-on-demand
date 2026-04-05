@@ -20,7 +20,7 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
-      {{- if .Values.spec.gitops.applications.thanosSidecar.thanosBucket }}
+      {{- if .Values.spec.gitops.applications.thanosSidecar.irsaRoleArn }}
       values: |
         thanos:
           global:
@@ -34,8 +34,7 @@ spec:
         {{- if .Values.spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn }}
             serviceAccount:
               annotations:
-                eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn | quote }}
-        {{- end }}
+                eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.thanosSidecar.irsaRoleArn | quote }}
       {{- end }}
 {{- if .Values.spec.gitops.applications.thanosSidecar.isEnabledAutoSync | default false }}
   syncPolicy:

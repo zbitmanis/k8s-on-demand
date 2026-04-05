@@ -204,17 +204,23 @@ jobs:
           AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
           WORKFLOW_RUNNER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/platform-argo-workflow-runner"
           CLUSTER_AUTOSCALER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-cluster-autoscaler"
-          THANOS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-thanos-sidecar"
           LBC_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-load-balancer-controller"
+          THANOS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-thanos-sidecar"
           SUSPEND_LAMBDA_NAME="${CLUSTER_NAME}-cluster-suspend"
 
-          # aws-load-balancer-controller + thanos-sidecar + prometheus: inject via App-of-Apps (durable through selfHeal)
+          # aws-load-balancer-controller: inject cluster name and IRSA via App-of-Apps (durable through selfHeal)
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.awsLoadBalancerController.clusterName=${CLUSTER_NAME}" \
+            --helm-set "spec.gitops.applications.awsLoadBalancerController.irsaRoleArn=${LBC_ARN}" \
+            || true
+
+          # thanos-sidecar + prometheus: inject metrics bucket and region via App-of-Apps parameter
           argocd app set app-of-apps \
             --helm-set "spec.gitops.applications.awsLoadBalancerController.clusterName=${CLUSTER_NAME}" \
             --helm-set "spec.gitops.applications.awsLoadBalancerController.irsaRoleArn=${LBC_ARN}" \
             --helm-set "spec.gitops.applications.thanosSidecar.thanosBucket=${THANOS_BUCKET}" \
             --helm-set "spec.gitops.applications.thanosSidecar.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=${THANOS_ARN}" \
+            --helm-set "spec.gitops.applications.thanosSidecar.irsaRoleArn=${THANOS_ARN}" \
             --helm-set "spec.gitops.applications.prometheus.thanosBucket=${THANOS_BUCKET}" \
             --helm-set "spec.gitops.applications.prometheus.awsRegion=${{ vars.AWS_REGION }}" \
             || true

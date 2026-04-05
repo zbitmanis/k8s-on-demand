@@ -46,7 +46,7 @@ spec:
         isEnabledAutoSync: true
         thanosBucket: ""         # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.thanosBucket=<bucket>
         awsRegion: ""            # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.awsRegion=<region>
-        workflowRunnerRoleArn: ""  # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=<arn>
+        irsaRoleArn: ""            # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.irsaRoleArn=<arn>
 
       ingressNginx:
         appPath: src/applications/ingress-nginx
