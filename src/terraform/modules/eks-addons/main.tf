@@ -76,7 +76,7 @@ data "aws_iam_policy_document" "cluster_autoscaler_trust" {
     condition {
       test     = "StringEquals"
       variable = "${var.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:kube-system:cluster-autoscaler"]
+      values   = ["system:serviceaccount:kube-system:cluster-autoscaler-aws-cluster-autoscaler"]
     }
     condition {
       test     = "StringEquals"
@@ -101,6 +101,7 @@ data "aws_iam_policy_document" "cluster_autoscaler_policy" {
       "autoscaling:DescribeLaunchConfigurations",
       "autoscaling:DescribeScalingActivities",
       "ec2:DescribeImages",
+      "ec2:DescribeLaunchTemplateVersions",
       "ec2:GetInstanceTypesFromInstanceRequirements",
       "eks:DescribeNodegroup",
     ]

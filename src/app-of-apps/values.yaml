@@ -19,6 +19,12 @@ spec:
 
     applications:
 
+      clusterResources:
+        appPath: src/applications/cluster-resources
+        namespace: ""
+        isEnabled: true
+        isEnabledAutoSync: true
+
       externalSecretsOperator:
         appPath: src/applications/external-secrets-operator
         namespace: external-secrets
