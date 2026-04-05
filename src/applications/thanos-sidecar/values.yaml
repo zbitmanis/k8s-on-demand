@@ -63,4 +63,9 @@ thanos:
     enabled: false
 
   bucket:
-    enabled: false
+    # enabled: true allows the chart to create the thanos-objstore Secret
+    # (secret-objstore.yaml guards on bucket.enabled AND global.objstore.createSecret).
+    # bucketweb.enabled: false ensures no bucket UI component is deployed.
+    enabled: true
+    bucketweb:
+      enabled: false
