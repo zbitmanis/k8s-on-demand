@@ -1,4 +1,13 @@
 crossplane:
+  nodeSelector:
+    node-role: system
+
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: system
+      effect: NoSchedule
+
   # Resource limits for the crossplane and rbac-manager pods
   resourcesCrossplane:
     limits:

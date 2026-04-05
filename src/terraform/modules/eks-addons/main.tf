@@ -66,6 +66,27 @@ resource "aws_iam_role_policy_attachment" "vpc_cni" {
 
 # ── EKS managed addons ────────────────────────────────────────────────────────
 
+resource "aws_eks_addon" "metrics_server" {
+  cluster_name                = var.cluster_name
+  addon_name                  = "metrics-server"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  configuration_values = jsonencode({
+    tolerations = [
+      {
+        key      = "node-role"
+        operator = "Equal"
+        value    = "system"
+        effect   = "NoSchedule"
+      }
+    ]
+    nodeSelector = {
+      "node-role" = "system"
+    }
+  })
+}
+
 resource "aws_eks_addon" "coredns" {
   cluster_name                = var.cluster_name
   addon_name                  = "coredns"
