@@ -29,6 +29,7 @@ spec:
                 type: S3
                 config:
                   bucket: {{ .Values.spec.gitops.applications.thanosSidecar.thanosBucket }}
+                  endpoint: s3.amazonaws.com
                   region: {{ .Values.spec.gitops.applications.thanosSidecar.awsRegion }}
             serviceAccount:
               annotations:
