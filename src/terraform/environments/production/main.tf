@@ -45,6 +45,7 @@ module "eks_addons" {
   cluster_version    = var.kubernetes_version
   oidc_provider_arn  = module.eks_cluster.oidc_provider_arn
   oidc_provider_url  = module.eks_cluster.oidc_provider_url
+  thanos_bucket      = var.metrics_bucket_name
 
   depends_on = [module.eks_cluster]
 }
