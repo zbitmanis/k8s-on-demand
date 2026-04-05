@@ -190,17 +190,25 @@ and the Thanos sidecar pod sets the tenant ID via its ClusterSecretStore configu
 
 ## Terraform Execution Role
 
-The `platform-terraform-execution` role assumed by GitHub Actions has permissions for:
+The `platform-terraform-execution` role is assumed by GitHub Actions (via OIDC) to run
+`terraform apply` for Day 0 cluster setup.
+
+> **Ownership: CloudFormation, not Terraform.** This role is defined in a CloudFormation
+> stack (`bootstrap/cfn-iam.yaml`), not in the Terraform modules. Creating it in Terraform
+> would create a chicken-and-egg problem: Terraform needs the role to run, but the role
+> would not exist until Terraform runs. CFN is applied once manually before any pipeline
+> execution. GitHub org and repo are CloudFormation parameters, not Terraform variables —
+> there is no `github_org` variable in the Terraform codebase.
+
+**Permissions:**
 * Creating/managing the single EKS cluster (one-time)
-* Creating per-tenant IAM roles
-* Managing shared resources (VPC, node groups, Prometheus, etc.)
+* Creating platform-level IAM roles (`iam-management` module)
+* Managing shared resources (VPC, node groups, EKS addons)
 
-This role is the highest-value target and has strict mitigations:
-
-* Trust policy restricts assumption to the specific GitHub org/repo
+**Security mitigations:**
+* Trust policy restricts assumption to the specific GitHub org/repo (CFN parameters)
 * CloudTrail logs all API calls made with this role
-* The role cannot modify its own trust policy (deny condition)
-* MFA requirement for console assumption (humans only)
+* The role cannot modify its own trust policy (deny condition below)
 * Only used for cluster setup; no per-tenant infrastructure changes
 
 ```json

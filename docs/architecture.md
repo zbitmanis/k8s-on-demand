@@ -32,6 +32,8 @@ objects via Crossplane Compositions. No Terraform state involved after Day 0.
 | Argo Workflows | Day 1 | Namespace provisioning, quota/policy application, Crossplane claim submission |
 | Argo Events | Day 1 | Event ingestion, webhook handling, trigger routing for tenant onboarding |
 | ArgoCD | Day 1 | System apps + Crossplane; per-tenant ApplicationSet for namespace-scoped apps |
+| Cluster Autoscaler | Day 0 | Workload node group scaling based on pending pod demand (scale-from-zero capable) |
+| EventBridge + Lambda | Day 0 | System node group scaling for cost saving (suspend at end of day, resume at start) |
 | Prometheus | Observability | Single instance scraping all namespaces; tenant isolation via `namespace` label |
 | Thanos | Observability | Long-term metric storage with namespace-aware prefix |
 | Gatekeeper | Admission | Cluster-wide policy enforcement: no privileged pods, no host access, system taint blocking |
@@ -66,13 +68,16 @@ workflows --> gha : cluster setup only
 prom --> thanos : remote write / sidecar
 argocd --> crossplane : sync Compositions
 
+component "EventBridge + Lambda\n(suspend/resume)" as lambda #LightYellow
+lambda --> sys_nodes : scale system ASG\n(business day boundaries)
+
 rectangle "Shared EKS Cluster" as cluster #E8F5E9 {
-  rectangle "System Node Group\n(tainted)" as sys_nodes {
+  rectangle "System Node Group\n(tainted, 0–3 nodes)" as sys_nodes {
     component "ArgoCD agent" as aa
     component "System apps\n(ESO, Prometheus, Nginx, Gatekeeper)" as sys_apps
   }
 
-  rectangle "Workload Node Group" as work_nodes {
+  rectangle "Workload Node Group\n(0–20 nodes, CA-managed)" as work_nodes {
     component "Tenant A\nNamespace" as ta
     component "Tenant B\nNamespace" as tb
     component "Tenant N\nNamespace" as tn
@@ -145,9 +150,24 @@ stop
 
 A single EKS cluster hosts all tenants, structured as:
 
-* **System node group** (tainted `node-role=system:NoSchedule`) — runs platform components (ArgoCD, Prometheus, Gatekeeper, Ingress, ESO)
-* **Workload node group** (no taint) — runs all tenant application pods, isolated per namespace
-* Node groups are shared; tenants are isolated at the namespace + NetworkPolicy + RBAC layer
+* **System node group** (tainted `node-role=system:NoSchedule`) — runs platform components (ArgoCD, Prometheus, Gatekeeper, Ingress, ESO). Scales between 0 and 3 nodes; managed by a Lambda/EventBridge schedule for cost saving (`min_size=0` allows full drain on suspend).
+* **Workload node group** (no taint) — runs all tenant application pods, isolated per namespace. Starts at `desired_size=0` on provision; Cluster Autoscaler brings nodes up as pods are scheduled and drains them when idle.
+* Node groups are shared; tenants are isolated at the namespace + NetworkPolicy + RBAC layer.
+
+### System Node Taint Requirement
+
+Because the workload node group starts at `desired_size=0`, every system component must be schedulable on system nodes from day one. All system workloads — ArgoCD, CoreDNS, EBS CSI controller, metrics-server, Crossplane, Gatekeeper, ESO, and any future system apps — **must** carry both:
+
+```yaml
+tolerations:
+  - key: node-role
+    value: system
+    effect: NoSchedule
+nodeSelector:
+  node-role: system
+```
+
+Without these, pods remain `Pending` until a workload node happens to exist, which defeats the separation between the two node groups.
 
 ## Tenant Isolation Model
 
@@ -161,6 +181,8 @@ Each tenant is isolated through multiple layers:
 | **IAM/Secrets** | Per-tenant ClusterSecretStore scoped to `/<tenant-id>/*` | AWS Secrets Manager path restriction + ESO RBAC |
 | **RBAC** | Namespace-scoped service accounts and roles | Kubernetes RBAC, Gatekeeper blocks cluster-scoped creations |
 | **Pod Security** | Gatekeeper constraints | Admission controller: prevents privileged pods, hostNetwork, host mounts, system taint toleration |
+
+> **Gatekeeper enforcement mode:** currently set to `warn`. All constraints are active and violations are logged, but pods are not yet blocked. Switching to `deny` requires a full compliance audit of all system and tenant workloads first — do not change enforcement mode without that audit.
 
 ## GitOps Source of Truth
 
@@ -205,6 +227,48 @@ ApplicationSet generates Applications dynamically per tenant directory, providin
 - Automatic discovery (add tenant config, ApplicationSet creates Application)
 - Namespace-scoped project isolation
 
+### Node group scaling split: Lambda/EventBridge for system nodes, Cluster Autoscaler for workload nodes
+
+Two independent scaling mechanisms operate on two separate node groups:
+
+| Node Group | Mechanism | Trigger | Purpose |
+| --- | --- | --- | --- |
+| System (0–3 nodes) | Lambda + EventBridge cron | Business day start/end | Cost saving — drain overnight when no tenants are active |
+| Workload (0–20 nodes) | Cluster Autoscaler | Pending pod demand | Elastic scaling — scale up when tenants schedule pods, down when idle |
+
+**Why not CA for system nodes?**
+System components (ArgoCD, Prometheus, Gatekeeper) run 24/7 during active sessions. CA is reactive to pod
+demand; it would never scale system nodes down because pods are always running. Lambda/EventBridge gives
+explicit control over when the system group runs, achieving true zero cost outside working hours.
+
+**Why not Lambda for workload nodes?**
+Tenant workloads arrive unpredictably and have variable shape. CA matches node provisioning to actual pod
+requests using the least-waste expander and scale-from-zero resource hints on the ASG. Lambda-based
+schedules would require knowing demand in advance.
+
+The system node group ASG is **not tagged** for CA auto-discovery, preventing CA from interfering with
+it. Only the workload group carries `k8s.io/cluster-autoscaler/enabled=true` and the cluster ownership tag.
+
+### Cluster Autoscaler deployment (vs self-managed autoscaling or KEDA)
+
+Cluster Autoscaler is deployed as an ArgoCD-managed Helm chart in `kube-system`, running on system nodes.
+
+**Key configuration choices:**
+- `expander: least-waste` — picks the instance type that leaves the smallest unused CPU/memory after
+  scheduling pending pods, minimising wasted capacity across the mixed instance type group.
+- `balance-similar-node-groups: false` — workload group has one ASG; balancing is not applicable.
+- `skip-nodes-with-system-pods: false` — system pods run on system nodes (separate group, not touched
+  by CA); setting this to `true` would block scale-down of workload nodes that happen to have
+  DaemonSet pods.
+- Scale-down delay: 5 minutes. Aggressive to minimise cost; workloads tolerate brief disruption in
+  the sandbox/dev context.
+- Scale-from-zero: enabled via ASG resource hint tags (`cpu=2`, `memory=4Gi` matching t3.medium shape).
+  Without these, CA cannot estimate node capacity before a node exists and will not scale up from 0.
+
+IRSA role (`<cluster-name>-cluster-autoscaler`) is created in `eks-addons` module with write actions
+(`SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup`) conditioned on the CA discovery ASG tags,
+preventing the role from touching any other ASG in the account.
+
 ### On-demand cost saving via full cluster lifecycle (development use)
 
 The cluster is provisioned at the start of a work session and destroyed when done. This achieves
@@ -213,7 +277,7 @@ true zero idle cost — no control plane, no nodes, no NAT gateways running over
 **Provision flow** (`provision-cluster` GitHub Actions workflow):
 1. `terraform apply` — VPC, IAM, EKS cluster, node groups, addons (~15-18 min)
 2. Bootstrap ArgoCD into the fresh cluster (kubectl apply, chicken-and-egg solved in GHA)
-3. Apply the App-of-Apps Application → ArgoCD syncs all 7 system apps (~3-5 min)
+3. Apply the App-of-Apps Application → ArgoCD syncs all system apps (~3-5 min)
 4. Cluster ready for tenant onboarding
 
 **Destroy flow** (`destroy-cluster` GitHub Actions workflow):
