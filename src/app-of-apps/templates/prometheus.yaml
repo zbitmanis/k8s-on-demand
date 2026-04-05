@@ -20,6 +20,20 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
+      {{- if .Values.spec.gitops.applications.prometheus.thanosBucket }}
+      values: |
+        kube-prometheus-stack:
+          prometheus:
+            prometheusSpec:
+              thanos:
+                objectStorageConfig:
+                  secret:
+                    type: S3
+                    config:
+                      bucket: {{ .Values.spec.gitops.applications.prometheus.thanosBucket | quote }}
+                      endpoint: s3.amazonaws.com
+                      region: {{ .Values.spec.gitops.applications.prometheus.awsRegion | quote }}
+      {{- end }}
 {{- if .Values.spec.gitops.applications.prometheus.isEnabledAutoSync | default false }}
   syncPolicy:
     automated: {}

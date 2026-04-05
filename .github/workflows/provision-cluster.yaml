@@ -212,10 +212,13 @@ jobs:
             --helm-set "aws-load-balancer-controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # thanos-sidecar: inject metrics bucket
-          argocd app set thanos-sidecar \
-            --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ vars.AWS_REGION }}\n" \
-            --helm-set "thanos.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
+          # thanos-sidecar + prometheus: inject metrics bucket and region via App-of-Apps parameter
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.thanosSidecar.thanosBucket=${THANOS_BUCKET}" \
+            --helm-set "spec.gitops.applications.thanosSidecar.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
+            --helm-set "spec.gitops.applications.prometheus.thanosBucket=${THANOS_BUCKET}" \
+            --helm-set "spec.gitops.applications.prometheus.awsRegion=${{ vars.AWS_REGION }}" \
             || true
 
           # argo-workflows: inject artifacts bucket, region, and runner role
