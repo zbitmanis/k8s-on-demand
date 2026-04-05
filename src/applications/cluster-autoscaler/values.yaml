@@ -1,0 +1,41 @@
+cluster-autoscaler:
+  # clusterName and awsRegion injected via ArgoCD app parameters at bootstrap
+  autoDiscovery:
+    clusterName: ""
+
+  awsRegion: ""
+
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler
+    annotations:
+      # IRSA role ARN injected via ArgoCD app parameter at bootstrap
+      eks.amazonaws.com/role-arn: ""
+
+  # Run on system nodes
+  nodeSelector:
+    node-role: system
+
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: system
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  extraArgs:
+    # Only manage the workload ASG (tagged); ignore system nodes
+    balance-similar-node-groups: false
+    # Workload nodes run only tenant pods — all are evictable
+    skip-nodes-with-system-pods: false
+    # Prefer cheapest instance type that fits pending pods
+    expander: least-waste
+    # Conservative scale-down delay for sandbox use
+    scale-down-delay-after-add: 5m
+    scale-down-unneeded-time: 5m

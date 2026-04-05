@@ -43,6 +43,12 @@ spec:
         isEnabled: true
         isEnabledAutoSync: true
 
+      clusterAutoscaler:
+        appPath: src/applications/cluster-autoscaler
+        namespace: kube-system
+        isEnabled: true
+        isEnabledAutoSync: true
+
       awsLoadBalancerController:
         appPath: src/applications/aws-load-balancer-controller
         namespace: aws

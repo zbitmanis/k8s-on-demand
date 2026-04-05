@@ -39,6 +39,11 @@ output "workflow_runner_role_arn" {
   value       = module.iam_management.workflow_runner_role_arn
 }
 
+output "cluster_autoscaler_role_arn" {
+  description = "IRSA role ARN for Cluster Autoscaler"
+  value       = module.eks_addons.cluster_autoscaler_role_arn
+}
+
 output "suspend_lambda_name" {
   description = "Name of the cluster-suspend Lambda function"
   value       = module.suspend_lambda.lambda_function_name
