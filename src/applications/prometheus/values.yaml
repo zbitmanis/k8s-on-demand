@@ -16,10 +16,10 @@ kube-prometheus-stack:
           secret:
             type: S3
             config:
-              # Bucket and region resolved at runtime from cluster environment
+              # Bucket and region injected at bootstrap via App-of-Apps helm.values
               bucket: ""
-              endpoint: ""
-              region: "eu-west-1"
+              endpoint: s3.amazonaws.com
+              region: ""
 
       externalLabels:
         cluster: platform-dev

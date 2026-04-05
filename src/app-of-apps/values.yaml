@@ -36,6 +36,8 @@ spec:
         namespace: monitoring
         isEnabled: true
         isEnabledAutoSync: true
+        thanosBucket: ""   # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.prometheus.thanosBucket=<bucket>
+        awsRegion: ""      # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.prometheus.awsRegion=<region>
 
       thanosSidecar:
         appPath: src/applications/thanos-sidecar
