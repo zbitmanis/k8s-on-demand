@@ -47,10 +47,10 @@ thanos:
     persistence:
       enabled: true
       storageClass: gp3
-      size: 5Gi
+      size: 2Gi
 
   compactor:
-    enabled: true
+    enabled: false
 
     nodeSelector:
       node-role: system

@@ -1,7 +1,7 @@
 ingress-nginx:
   controller:
     # Runs on workload nodes (not system nodes) — handles tenant traffic
-    replicaCount: 2
+    replicaCount: 1
 
     service:
       type: LoadBalancer

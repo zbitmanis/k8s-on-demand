@@ -127,7 +127,7 @@ resource "aws_lambda_function" "cluster_suspend" {
 
 resource "aws_cloudwatch_log_group" "cluster_suspend" {
   name              = "/aws/lambda/${local.function_name}"
-  retention_in_days = 30
+  retention_in_days = 7
   tags              = var.tags
 }
 
