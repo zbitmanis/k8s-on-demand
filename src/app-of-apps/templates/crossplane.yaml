@@ -25,7 +25,9 @@ spec:
         {{- end }}
 {{- if .Values.spec.gitops.applications.crossplane.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
     retry:
@@ -59,7 +61,9 @@ spec:
     targetRevision: {{ .Values.spec.gitops.applications.crossplaneProviderAws.targetRevision | default .Values.spec.source.targetRevision }}
 {{- if .Values.spec.gitops.applications.crossplaneProviderAws.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
     retry:
@@ -93,7 +97,9 @@ spec:
     targetRevision: {{ .Values.spec.gitops.applications.crossplaneCompositions.targetRevision | default .Values.spec.source.targetRevision }}
 {{- if .Values.spec.gitops.applications.crossplaneCompositions.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false
     retry:

@@ -35,6 +35,7 @@ thanos:
         type: S3
         config:
           bucket: ""
+          endpoint: s3.amazonaws.com
           region: ""
 
     serviceAccount:
@@ -56,4 +57,10 @@ thanos:
       size: 2Gi
 
   compactor:
+    enabled: false
+
+  receive:
+    enabled: false
+
+  bucket:
     enabled: false

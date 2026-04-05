@@ -30,7 +30,9 @@ spec:
       {{- end }}
 {{- if .Values.spec.gitops.applications.clusterAutoscaler.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
     retry:

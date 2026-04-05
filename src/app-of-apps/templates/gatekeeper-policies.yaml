@@ -24,7 +24,9 @@ spec:
         {{- end }}
 {{- if .Values.spec.gitops.applications.gatekeeperPolicies.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false
     retry:

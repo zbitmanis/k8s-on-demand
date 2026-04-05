@@ -29,6 +29,7 @@ spec:
                 type: S3
                 config:
                   bucket: {{ .Values.spec.gitops.applications.thanosSidecar.thanosBucket }}
+                  endpoint: s3.amazonaws.com
                   region: {{ .Values.spec.gitops.applications.thanosSidecar.awsRegion }}
             serviceAccount:
               annotations:
@@ -36,7 +37,9 @@ spec:
       {{- end }}
 {{- if .Values.spec.gitops.applications.thanosSidecar.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
     retry:
