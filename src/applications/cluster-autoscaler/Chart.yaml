@@ -1,0 +1,11 @@
+apiVersion: v2
+name: cluster-autoscaler
+description: Cluster Autoscaler — scales workload node group based on pending pods
+type: application
+version: 0.1.0
+appVersion: "9.37.0"
+
+dependencies:
+  - name: cluster-autoscaler
+    version: "9.37.0"
+    repository: https://kubernetes.github.io/autoscaler

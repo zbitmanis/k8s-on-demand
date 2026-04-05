@@ -64,6 +64,76 @@ resource "aws_iam_role_policy_attachment" "vpc_cni" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
+# ── Cluster Autoscaler IRSA role ─────────────────────────────────────────────
+
+data "aws_iam_policy_document" "cluster_autoscaler_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:kube-system:cluster-autoscaler"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "cluster_autoscaler" {
+  name               = "${var.cluster_name}-cluster-autoscaler"
+  assume_role_policy = data.aws_iam_policy_document.cluster_autoscaler_trust.json
+}
+
+data "aws_iam_policy_document" "cluster_autoscaler_policy" {
+  statement {
+    sid    = "AutoscalingRead"
+    effect = "Allow"
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeLaunchConfigurations",
+      "autoscaling:DescribeScalingActivities",
+      "ec2:DescribeImages",
+      "ec2:GetInstanceTypesFromInstanceRequirements",
+      "eks:DescribeNodegroup",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AutoscalingWrite"
+    effect = "Allow"
+    actions = [
+      "autoscaling:SetDesiredCapacity",
+      "autoscaling:TerminateInstanceInAutoScalingGroup",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/enabled"
+      values   = ["true"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/${var.cluster_name}"
+      values   = ["owned"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "cluster_autoscaler" {
+  name   = "cluster-autoscaler"
+  role   = aws_iam_role.cluster_autoscaler.name
+  policy = data.aws_iam_policy_document.cluster_autoscaler_policy.json
+}
+
 # ── EKS managed addons ────────────────────────────────────────────────────────
 
 resource "aws_eks_addon" "metrics_server" {

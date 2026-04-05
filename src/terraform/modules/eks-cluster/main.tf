@@ -215,6 +215,16 @@ module "eks" {
       labels = {
         "node-role" = "workload"
       }
+
+      # Cluster Autoscaler auto-discovery tags — workload group only.
+      # System group is managed by the suspend Lambda and must not be tagged.
+      tags = {
+        "k8s.io/cluster-autoscaler/enabled"              = "true"
+        "k8s.io/cluster-autoscaler/${var.cluster_name}"  = "owned"
+        # Resource hints for scale-from-zero (conservative: t3.medium shape)
+        "k8s.io/cluster-autoscaler/node-template/resources/cpu"    = "2"
+        "k8s.io/cluster-autoscaler/node-template/resources/memory" = "4Gi"
+      }
     }
   }
 }

@@ -1,0 +1,35 @@
+{{- if .Values.spec.gitops.applications.clusterAutoscaler.isEnabled | default false }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-autoscaler
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.clusterAutoscaler.namespace | default "kube-system" }}
+  project: {{ .Values.spec.gitops.applications.clusterAutoscaler.project | default "default" }}
+  source:
+    path: {{ .Values.spec.gitops.applications.clusterAutoscaler.appPath }}
+    repoURL: {{ .Values.spec.gitops.applications.clusterAutoscaler.repoURL | default .Values.spec.default.repoURL }}
+    targetRevision: {{ .Values.spec.gitops.applications.clusterAutoscaler.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+{{- if .Values.spec.gitops.applications.clusterAutoscaler.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+{{- end }}
+{{- end }}
