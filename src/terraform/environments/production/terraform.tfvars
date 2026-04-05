@@ -1,7 +1,7 @@
 region             = "eu-central-1"
 environment        = "staging"
 cluster_name       = "platform-dev"
-kubernetes_version = "1.29"
+kubernetes_version = "1.34"
 
 vpc_cidr = "10.28.0.0/22"
 availability_zones = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]
