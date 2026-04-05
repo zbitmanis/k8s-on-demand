@@ -216,6 +216,8 @@ jobs:
 
           # thanos-sidecar + prometheus: inject metrics bucket and region via App-of-Apps parameter
           argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.awsLoadBalancerController.clusterName=${CLUSTER_NAME}" \
+            --helm-set "spec.gitops.applications.awsLoadBalancerController.irsaRoleArn=${LBC_ARN}" \
             --helm-set "spec.gitops.applications.thanosSidecar.thanosBucket=${THANOS_BUCKET}" \
             --helm-set "spec.gitops.applications.thanosSidecar.awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "spec.gitops.applications.thanosSidecar.irsaRoleArn=${THANOS_ARN}" \

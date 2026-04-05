@@ -31,6 +31,7 @@ spec:
                   bucket: {{ .Values.spec.gitops.applications.thanosSidecar.thanosBucket }}
                   endpoint: s3.amazonaws.com
                   region: {{ .Values.spec.gitops.applications.thanosSidecar.awsRegion }}
+        {{- if .Values.spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn }}
             serviceAccount:
               annotations:
                 eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.thanosSidecar.irsaRoleArn | quote }}
