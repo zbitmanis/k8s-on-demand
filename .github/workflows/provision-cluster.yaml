@@ -77,8 +77,7 @@ jobs:
             -target=module.eks_cluster.aws_iam_role_policy_attachment.node_group_ecr \
             -var-file=terraform.tfvars \
             -var="region=${{ vars.AWS_REGION }}" \
-            -var="environment=${{ inputs.environment }}" \
-            -var="github_org=$(echo '${{ github.repository }}' | cut -d/ -f1)"
+            -var="environment=${{ inputs.environment }}"
 
       - name: Terraform apply — full
         working-directory: ${{ env.TF_DIR }}
@@ -89,8 +88,7 @@ jobs:
             -auto-approve \
             -var-file=terraform.tfvars \
             -var="region=${{ vars.AWS_REGION }}" \
-            -var="environment=${{ inputs.environment }}" \
-            -var="github_org=$(echo '${{ github.repository }}' | cut -d/ -f1)"
+            -var="environment=${{ inputs.environment }}"
 
       - name: Export Terraform outputs
         id: tf-outputs

@@ -158,15 +158,18 @@ module "eks" {
 
   eks_managed_node_groups = {
     # System node group — runs platform components (ArgoCD, Prometheus, Gatekeeper, etc.)
+    # min_size=0 allows the suspend Lambda to scale to zero on schedule.
+    # t3.large is ~30% cheaper than m5.large with the same 8 GiB RAM; burstable
+    # CPU suits the idle/bursty profile of system workloads.
     system = {
       name           = "${var.cluster_name}-system"
-      instance_types = ["m5.large"]
+      instance_types = ["t3.large", "m5.large"]
 
       create_iam_role = false
       iam_role_arn    = aws_iam_role.node_group["system"].arn
 
-      min_size     = 2
-      max_size     = 2
+      min_size     = 0
+      max_size     = 3
       desired_size = 2
 
       disk_size = 50
@@ -199,9 +202,9 @@ module "eks" {
 
       min_size     = 0
       max_size     = 20
-      desired_size = 3
+      desired_size = 0
 
-      disk_size = 100
+      disk_size = 50
 
       labels = {
         "node-role" = "workload"
