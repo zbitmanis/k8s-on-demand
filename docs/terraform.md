@@ -13,9 +13,9 @@ src/terraform/
 ├── modules/
 │   ├── eks-cluster/          # EKS control plane + managed node groups
 │   ├── vpc/                  # VPC, subnets, IGW, NAT, route tables
-│   ├── iam-management/       # Platform-level IAM (one-time setup)
+│   ├── iam-management/       # Platform-level IAM (Terraform-managed roles; execution role is in CFN)
 │   ├── iam-tenant-roles/     # Per-tenant IRSA roles (created once, used by all tenants)
-│   ├── eks-addons/           # CoreDNS, kube-proxy, VPC CNI, EBS CSI
+│   ├── eks-addons/           # EKS managed addons + IRSA roles (EBS CSI, VPC CNI, CA, metrics-server)
 │   ├── networking/           # SecurityGroups, NACL rules
 │   └── monitoring/           # Prometheus, Thanos, Grafana
 ├── environments/
@@ -158,11 +158,14 @@ stop
 ### Key Design Choices
 
 * Single managed EKS cluster (not per-tenant)
-* Managed node groups: system (tainted) and workload (shared)
-* Private API endpoint enabled; public endpoint disabled in production
-* API server allowlist: management VPC CIDR only
-* IRSA enabled (IAM OIDC provider created once)
-* Envelope encryption of etcd with customer-managed KMS key
+* Managed node groups: system (tainted, t3.large/m5.large) and workload (untainted, t3.medium/m5.large/m5.xlarge)
+* `authentication_mode = "API"` — EKS Access Entry API only; no `aws-auth` ConfigMap. All cluster access visible in AWS Console and CloudTrail.
+* `enable_cluster_creator_admin_permissions = false` — explicit access entries only; no implicit cluster-admin for the caller
+* Private API endpoint always enabled; public endpoint enabled in dev (GitHub Actions runners need cluster access)
+* IRSA enabled (IAM OIDC provider created once by the EKS module)
+* Envelope encryption of etcd with a customer-managed KMS key (7-day deletion window, key rotation enabled)
+* Node group IAM roles pre-created outside the EKS module — prevents unknown `for_each` keys crashing the plan on a fresh apply
+* `AmazonSSMManagedInstanceCore` attached to both node group roles — enables Session Manager shell access without SSH keys
 
 ### Inputs
 
@@ -180,30 +183,36 @@ stop
 ### Node Group Object Schema
 
 ```hcl
-node_groups = {
-  system = {
-    instance_types  = ["m5.large"]
-    min_size        = 2
-    max_size        = 2
-    desired_size    = 2
-    disk_size       = 50
-    labels          = { "node-role" = "system" }
-    taints          = [{ key = "node-role", value = "system", effect = "NoSchedule" }]
-  }
-  workload = {
-    instance_types  = ["m5.xlarge", "m5.2xlarge"]
-    min_size        = 0
-    max_size        = 20                    # Total capacity for all tenants
-    desired_size    = 3
-    disk_size       = 100
-    labels          = { "node-role" = "workload" }
-    taints          = []
-  }
+# system node group — platform components (ArgoCD, Prometheus, Gatekeeper, etc.)
+system = {
+  instance_types = ["t3.large", "m5.large"]   # burstable + on-demand fallback
+  min_size       = 0                           # min=0 allows suspend Lambda to fully drain
+  max_size       = 3
+  desired_size   = 2
+  disk_size      = 50
+  labels         = { "node-role" = "system" }
+  taints         = [{ key = "node-role", value = "system", effect = "NO_SCHEDULE" }]
+  # NOT tagged for CA auto-discovery — managed by suspend Lambda only
+}
+
+# workload node group — tenant application pods
+workload = {
+  instance_types = ["t3.medium", "m5.large", "m5.xlarge"]   # CA picks cheapest that fits
+  min_size       = 0                                          # scale-from-zero enabled
+  max_size       = 20
+  desired_size   = 0                                          # starts empty; CA brings up nodes
+  disk_size      = 50
+  labels         = { "node-role" = "workload" }
+  taints         = []
+  # CA auto-discovery tags + scale-from-zero resource hints (cpu=2, memory=4Gi)
 }
 ```
 
-Workload node group is shared across all tenants. Its max size should accommodate
-expected total tenant resource requests. Scale up before onboarding large tenants.
+**System node group scaling** is controlled by a Lambda/EventBridge schedule (suspend at end of day,
+resume at start). The group is excluded from CA auto-discovery intentionally.
+
+**Workload node group scaling** is fully managed by Cluster Autoscaler. `desired_size=0` on provision;
+CA scales up when tenant pods are pending and scales down when nodes are idle for 5 minutes.
 
 ## Module: `iam-tenant-roles`
 
@@ -243,14 +252,36 @@ module "iam_tenant_roles" {
 }
 ```
 
+## Module: `eks-addons`
+
+Manages EKS managed addons and the IRSA roles they require.
+
+**Addons:**
+* `coredns` — configured with system node toleration/nodeSelector so it schedules when workload nodes are at 0
+* `kube-proxy` — DaemonSet, no configuration override needed
+* `vpc-cni` — IRSA role (`<cluster>-vpc-cni`) with `AmazonEKS_CNI_Policy`
+* `aws-ebs-csi-driver` — IRSA role (`<cluster>-ebs-csi-driver`); controller Deployment configured for system nodes
+* `metrics-server` — configured with system node toleration/nodeSelector
+
+**IRSA roles created here (not in `iam-management`):**
+* `<cluster>-ebs-csi-driver` — `AmazonEBSCSIDriverPolicy`
+* `<cluster>-vpc-cni` — `AmazonEKS_CNI_Policy`
+* `<cluster>-cluster-autoscaler` — scoped inline policy: read actions on `*`, write actions (`SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup`) conditioned on CA auto-discovery ASG tags
+
+All addon Deployments that require scheduling on system nodes carry both a `tolerations` block and a `nodeSelector` via `configuration_values`. Without these, pods remain `Pending` when workload `desired_size=0`.
+
 ## Module: `iam-management`
 
-One-time setup for platform-level roles:
+One-time setup for Terraform-managed platform roles:
 
-* `platform-terraform-execution` — GitHub Actions OIDC role
-* `platform-argocd-cluster-manager` — ArgoCD management role
-* `platform-argo-workflow-runner` — Argo Workflows pods role
-* `platform-break-glass` — Emergency access role
+* `platform-argocd-cluster-manager` — ArgoCD IRSA role (EKS OIDC trust)
+* `platform-argo-workflow-runner` — Argo Workflows pods IRSA role
+* `platform-break-glass` — Emergency access role (MFA required)
+* `platform-ops-cluster-access` — Engineer kubectl access via Google Workspace SSO
+
+> **`platform-terraform-execution` is NOT in this module.** It is defined in
+> `bootstrap/cfn-iam.yaml` (CloudFormation) to avoid a chicken-and-egg dependency.
+> GitHub org and repo are CFN parameters. See `docs/iam-conventions.md` for details.
 
 ## Tagging Convention
 
@@ -320,20 +351,22 @@ terraform apply plan.tfplan
 
 ### Scaling Workload Nodes
 
-Edit `src/terraform/cluster.tfvars` and update `node_groups.workload.max_size`:
+Workload nodes are managed by Cluster Autoscaler — no manual intervention needed for
+day-to-day scaling. CA scales up when pods are pending and scales down when nodes are
+idle for 5 minutes.
 
-```bash
-# Example: increase capacity from 20 to 30 instances
-node_groups = {
-  workload = {
-    max_size = 30  # Was 20
-  }
+To increase the **ceiling** (maximum allowed nodes), update `kubernetes_version` is in
+`terraform.tfvars` and edit the workload group `max_size` in `eks-cluster/main.tf`:
+
+```hcl
+# src/terraform/modules/eks-cluster/main.tf
+workload = {
+  max_size = 30  # Was 20 — increase when total tenant capacity approaches the limit
 }
-
-# Plan and apply
-terraform plan
-terraform apply
 ```
+
+Apply via the provision-cluster GitHub Actions workflow. The change takes effect
+immediately — CA can now scale beyond the previous ceiling.
 
 ### Upgrading Kubernetes Version
 
