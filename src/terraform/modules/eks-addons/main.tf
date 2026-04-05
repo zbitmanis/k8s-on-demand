@@ -71,6 +71,22 @@ resource "aws_eks_addon" "coredns" {
   addon_name                  = "coredns"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
+
+  # CoreDNS is a Deployment — it needs an explicit toleration for the system
+  # node taint so it can schedule on system nodes when workload nodes are at 0.
+  configuration_values = jsonencode({
+    tolerations = [
+      {
+        key      = "node-role"
+        operator = "Equal"
+        value    = "system"
+        effect   = "NoSchedule"
+      }
+    ]
+    nodeSelector = {
+      "node-role" = "system"
+    }
+  })
 }
 
 resource "aws_eks_addon" "kube_proxy" {
@@ -94,4 +110,24 @@ resource "aws_eks_addon" "ebs_csi" {
   service_account_role_arn    = aws_iam_role.ebs_csi.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
+
+  # EBS CSI controller is a Deployment — same taint toleration needed as CoreDNS.
+  configuration_values = jsonencode({
+    controller = {
+      tolerations = [
+        {
+          key      = "node-role"
+          operator = "Equal"
+          value    = "system"
+          effect   = "NoSchedule"
+        }
+      ]
+      nodeSelector = {
+        "node-role" = "system"
+      }
+    }
+    node = {
+      enableWindows = false
+    }
+  })
 }
