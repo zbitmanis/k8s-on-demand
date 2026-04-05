@@ -23,6 +23,9 @@ spec:
       {{- if .Values.spec.gitops.applications.clusterAutoscaler.irsaRoleArn }}
       values: |
         cluster-autoscaler:
+          autoDiscovery:
+            clusterName: {{ .Values.spec.gitops.applications.clusterAutoscaler.clusterName | quote }}
+          awsRegion: {{ .Values.spec.gitops.applications.clusterAutoscaler.awsRegion | quote }}
           rbac:
             serviceAccount:
               annotations:
