@@ -20,6 +20,14 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
+      {{- if .Values.spec.gitops.applications.awsLoadBalancerController.irsaRoleArn }}
+      values: |
+        aws-load-balancer-controller:
+          clusterName: {{ .Values.spec.gitops.applications.awsLoadBalancerController.clusterName | quote }}
+          serviceAccount:
+            annotations:
+              eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.awsLoadBalancerController.irsaRoleArn | quote }}
+      {{- end }}
 {{- if .Values.spec.gitops.applications.awsLoadBalancerController.isEnabledAutoSync | default false }}
   syncPolicy:
     automated:

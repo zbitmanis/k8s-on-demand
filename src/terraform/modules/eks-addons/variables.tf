@@ -17,3 +17,8 @@ variable "oidc_provider_url" {
   type        = string
   description = "EKS cluster OIDC provider URL without https://"
 }
+
+variable "thanos_bucket" {
+  type        = string
+  description = "S3 bucket name for Thanos long-term metric storage (used to scope Thanos IRSA policy)"
+}
