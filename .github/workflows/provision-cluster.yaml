@@ -212,20 +212,17 @@ jobs:
             --helm-set "aws-load-balancer-controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # thanos-sidecar: inject metrics bucket, region, and runner role via App-of-Apps parameter
-          # (durable: stored on parent Application, survives App-of-Apps selfHeal re-renders)
-          argocd app set app-of-apps \
-            --helm-set "spec.gitops.applications.thanosSidecar.thanosBucket=${THANOS_BUCKET}" \
-            --helm-set "spec.gitops.applications.thanosSidecar.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
+          # thanos-sidecar: inject metrics bucket
+          argocd app set thanos-sidecar \
+            --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ vars.AWS_REGION }}\n" \
+            --helm-set "thanos.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # argo-workflows: inject bucket, region, and runner role via App-of-Apps parameter
-          # (durable: stored on parent Application, survives App-of-Apps selfHeal re-renders)
-          argocd app set app-of-apps \
-            --helm-set "spec.gitops.applications.argoWorkflows.artifactsBucket=${ARTIFACTS_BUCKET}" \
-            --helm-set "spec.gitops.applications.argoWorkflows.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
+          # argo-workflows: inject artifacts bucket, region, and runner role
+          argocd app set argo-workflows \
+            --helm-set "argo-workflows.artifactRepository.s3.bucket=${ARTIFACTS_BUCKET}" \
+            --helm-set "argo-workflows.artifactRepository.s3.region=${{ vars.AWS_REGION }}" \
+            --helm-set "argo-workflows.artifactRepository.s3.roleARN=${WORKFLOW_RUNNER_ARN}" \
             || true
 
           # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
@@ -241,27 +238,17 @@ jobs:
           argocd app set cluster-autoscaler \
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
             || true
-
-          # Inject IRSA ARN via App-of-Apps parameter — stored on the parent Application
-          # so App-of-Apps selfHeal re-renders the child with the correct helm.values.
-          # This is durable: kubectl patch on the child is reverted by selfHeal within ~3min.
-          argocd app set app-of-apps \
-            --helm-set "spec.gitops.applications.clusterAutoscaler.irsaRoleArn=${CLUSTER_AUTOSCALER_ARN}" \
-            || true
-
-          echo "Waiting for app-of-apps to re-sync with IRSA ARN..."
-          argocd app wait app-of-apps --operation --timeout 120 || true
-          echo "Waiting for cluster-autoscaler to sync..."
-          argocd app wait cluster-autoscaler --sync --timeout 120 || true
 
           kill $PF_PID 2>/dev/null || true
 
       - name: Restart cluster-autoscaler to pick up IRSA annotation
         run: |
-          # argocd app set triggers a sync that updates the ServiceAccount, but the
-          # existing pod was created before the annotation was set. Restart forces
-          # new pods so the EKS pod identity webhook injects the IRSA token.
+          # argocd app set updates the ServiceAccount annotation but does not
+          # restart existing pods. Rollout restart forces new pods so the EKS
+          # pod identity webhook injects the IRSA token.
+          # SA and Deployment are both named <release>-aws-cluster-autoscaler.
           kubectl rollout restart deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system
           kubectl rollout status deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system --timeout=120s
 
