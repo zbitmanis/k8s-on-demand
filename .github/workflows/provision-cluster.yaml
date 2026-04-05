@@ -130,6 +130,31 @@ jobs:
           kubectl apply -n "${{ env.ARGOCD_NAMESPACE }}" \
             -f "https://raw.githubusercontent.com/argoproj/argo-cd/${{ env.ARGOCD_VERSION }}/manifests/install.yaml"
 
+      - name: Patch ArgoCD workloads for system node scheduling
+        run: |
+          # All ArgoCD components must tolerate the system node taint and be
+          # pinned to system nodes.  The upstream install.yaml has no tolerations,
+          # so we patch every Deployment and the StatefulSet after apply.
+          TAINT_PATCH=$(cat <<'EOF'
+          {
+            "spec": {
+              "template": {
+                "spec": {
+                  "tolerations": [
+                    {"key": "node-role", "operator": "Equal", "value": "system", "effect": "NoSchedule"}
+                  ],
+                  "nodeSelector": {"node-role": "system"}
+                }
+              }
+            }
+          }
+          EOF
+          )
+          for deploy in argocd-server argocd-repo-server argocd-applicationset-controller argocd-dex-server argocd-notifications-controller argocd-redis; do
+            kubectl patch deployment "$deploy" -n "${{ env.ARGOCD_NAMESPACE }}" --type=merge -p "$TAINT_PATCH"
+          done
+          kubectl patch statefulset argocd-application-controller -n "${{ env.ARGOCD_NAMESPACE }}" --type=merge -p "$TAINT_PATCH"
+
       - name: Wait for ArgoCD server
         run: |
           kubectl rollout status deployment/argocd-server \
