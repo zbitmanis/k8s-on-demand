@@ -54,6 +54,12 @@ resource "aws_iam_role_policy_attachment" "node_group_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+resource "aws_iam_role_policy_attachment" "node_group_ssm" {
+  for_each   = aws_iam_role.node_group
+  role       = each.value.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 # ── EKS cluster ───────────────────────────────────────────────────────────────
 
 module "eks" {
