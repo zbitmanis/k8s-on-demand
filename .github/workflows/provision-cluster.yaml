@@ -238,7 +238,7 @@ jobs:
           argocd app set cluster-autoscaler \
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
+            --helm-set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
             || true
 
           kill $PF_PID 2>/dev/null || true
