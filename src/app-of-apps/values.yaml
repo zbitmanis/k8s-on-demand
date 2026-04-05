@@ -59,6 +59,8 @@ spec:
         namespace: kube-system
         isEnabled: true
         isEnabledAutoSync: true
+        clusterName: ""   # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.clusterAutoscaler.clusterName=<name>
+        awsRegion: ""     # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.clusterAutoscaler.awsRegion=<region>
         irsaRoleArn: ""   # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.clusterAutoscaler.irsaRoleArn=<arn>
 
       awsLoadBalancerController:

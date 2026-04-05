@@ -94,8 +94,8 @@ jobs:
         run: |
           echo "cluster_name=$(terraform output -raw cluster_name)"                         >> "$GITHUB_OUTPUT"
           echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)"                 >> "$GITHUB_OUTPUT"
-          echo "thanos_bucket=${{ secrets.THANOS_METRICS_BUCKET }}"                        >> "$GITHUB_OUTPUT"
-          echo "artifacts_bucket=${{ secrets.ARGO_ARTIFACTS_BUCKET }}"                     >> "$GITHUB_OUTPUT"
+          echo "thanos_bucket=${{ vars.THANOS_METRICS_BUCKET }}"                          >> "$GITHUB_OUTPUT"
+          echo "artifacts_bucket=${{ vars.ARGO_ARTIFACTS_BUCKET }}"                       >> "$GITHUB_OUTPUT"
 
   # ── 2. Bootstrap ArgoCD ───────────────────────────────────────────────────
   bootstrap-argocd:
@@ -208,13 +208,7 @@ jobs:
           THANOS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-thanos-sidecar"
           SUSPEND_LAMBDA_NAME="${CLUSTER_NAME}-cluster-suspend"
 
-          # aws-load-balancer-controller: inject cluster name and IRSA via App-of-Apps (durable through selfHeal)
-          argocd app set app-of-apps \
-            --helm-set "spec.gitops.applications.awsLoadBalancerController.clusterName=${CLUSTER_NAME}" \
-            --helm-set "spec.gitops.applications.awsLoadBalancerController.irsaRoleArn=${LBC_ARN}" \
-            || true
-
-          # thanos-sidecar + prometheus: inject metrics bucket and region via App-of-Apps parameter
+          # Inject all runtime values via App-of-Apps (durable through selfHeal)
           argocd app set app-of-apps \
             --helm-set "spec.gitops.applications.awsLoadBalancerController.clusterName=${CLUSTER_NAME}" \
             --helm-set "spec.gitops.applications.awsLoadBalancerController.irsaRoleArn=${LBC_ARN}" \
@@ -225,11 +219,11 @@ jobs:
             --helm-set "spec.gitops.applications.prometheus.awsRegion=${{ vars.AWS_REGION }}" \
             || true
 
-          # argo-workflows: inject artifacts bucket, region, and runner role
-          argocd app set argo-workflows \
-            --helm-set "argo-workflows.artifactRepository.s3.bucket=${ARTIFACTS_BUCKET}" \
-            --helm-set "argo-workflows.artifactRepository.s3.region=${{ vars.AWS_REGION }}" \
-            --helm-set "argo-workflows.artifactRepository.s3.roleARN=${WORKFLOW_RUNNER_ARN}" \
+          # argo-workflows: inject artifacts bucket, region, and runner role via app-of-apps (durable through selfHeal)
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.argoWorkflows.artifactsBucket=${ARTIFACTS_BUCKET}" \
+            --helm-set "spec.gitops.applications.argoWorkflows.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
           # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
@@ -241,23 +235,14 @@ jobs:
             --helm-set "github.repo=${GITHUB_REPO}" \
             || true
 
-          # cluster-autoscaler: inject cluster name and region into child app
-          argocd app set cluster-autoscaler \
-            --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
-            --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
-            --helm-set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
+          # cluster-autoscaler: inject cluster name, region, and IRSA role via app-of-apps (durable through selfHeal)
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.clusterAutoscaler.clusterName=${CLUSTER_NAME}" \
+            --helm-set "spec.gitops.applications.clusterAutoscaler.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "spec.gitops.applications.clusterAutoscaler.irsaRoleArn=${CLUSTER_AUTOSCALER_ARN}" \
             || true
 
           kill $PF_PID 2>/dev/null || true
-
-      - name: Restart cluster-autoscaler to pick up IRSA annotation
-        run: |
-          # argocd app set updates the ServiceAccount annotation but does not
-          # restart existing pods. Rollout restart forces new pods so the EKS
-          # pod identity webhook injects the IRSA token.
-          # SA and Deployment are both named <release>-aws-cluster-autoscaler.
-          kubectl rollout restart deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system
-          kubectl rollout status deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system --timeout=120s
 
   # ── 3. Wait for all system apps healthy ──────────────────────────────────
   wait-healthy:
