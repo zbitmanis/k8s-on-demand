@@ -37,7 +37,9 @@ spec:
       {{- end }}
 {{- if .Values.spec.gitops.applications.thanosSidecar.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
     retry:

@@ -36,7 +36,9 @@ spec:
       {{- end }}
 {{- if .Values.spec.gitops.applications.prometheus.isEnabledAutoSync | default false }}
   syncPolicy:
-    automated: {}
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
