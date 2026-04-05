@@ -20,6 +20,18 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
+      {{- if .Values.spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn }}
+      values: |
+        thanos:
+          objstoreConfig: |-
+            type: S3
+            config:
+              bucket: {{ .Values.spec.gitops.applications.thanosSidecar.thanosBucket }}
+              region: {{ .Values.spec.gitops.applications.thanosSidecar.awsRegion }}
+          serviceAccount:
+            annotations:
+              eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn | quote }}
+      {{- end }}
 {{- if .Values.spec.gitops.applications.thanosSidecar.isEnabledAutoSync | default false }}
   syncPolicy:
     automated: {}

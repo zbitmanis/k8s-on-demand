@@ -212,17 +212,20 @@ jobs:
             --helm-set "aws-load-balancer-controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # thanos-sidecar: inject metrics bucket
-          argocd app set thanos-sidecar \
-            --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ vars.AWS_REGION }}\n" \
-            --helm-set "thanos.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
+          # thanos-sidecar: inject metrics bucket, region, and runner role via App-of-Apps parameter
+          # (durable: stored on parent Application, survives App-of-Apps selfHeal re-renders)
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.thanosSidecar.thanosBucket=${THANOS_BUCKET}" \
+            --helm-set "spec.gitops.applications.thanosSidecar.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # argo-workflows: inject artifacts bucket, region, and runner role
-          argocd app set argo-workflows \
-            --helm-set "argo-workflows.artifactRepository.s3.bucket=${ARTIFACTS_BUCKET}" \
-            --helm-set "argo-workflows.artifactRepository.s3.region=${{ vars.AWS_REGION }}" \
-            --helm-set "argo-workflows.artifactRepository.s3.roleARN=${WORKFLOW_RUNNER_ARN}" \
+          # argo-workflows: inject bucket, region, and runner role via App-of-Apps parameter
+          # (durable: stored on parent Application, survives App-of-Apps selfHeal re-renders)
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.argoWorkflows.artifactsBucket=${ARTIFACTS_BUCKET}" \
+            --helm-set "spec.gitops.applications.argoWorkflows.awsRegion=${{ vars.AWS_REGION }}" \
+            --helm-set "spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
           # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
@@ -234,17 +237,23 @@ jobs:
             --helm-set "github.repo=${GITHUB_REPO}" \
             || true
 
-          # cluster-autoscaler: inject cluster name and region via helm-set (no special chars)
+          # cluster-autoscaler: inject cluster name and region into child app
           argocd app set cluster-autoscaler \
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
             || true
 
-          # Inject IRSA role ARN via spec.source.helm.values (inline YAML) — this is
-          # pure Helm values passed directly to helm template, avoiding --helm-set
-          # dot-escaping issues with annotation keys containing dots.
-          kubectl patch application cluster-autoscaler -n argocd --type=merge -p \
-            "{\"spec\":{\"source\":{\"helm\":{\"values\":\"cluster-autoscaler:\\n  serviceAccount:\\n    annotations:\\n      eks.amazonaws.com/role-arn: \\\"${CLUSTER_AUTOSCALER_ARN}\\\"\\n\"}}}}"
+          # Inject IRSA ARN via App-of-Apps parameter — stored on the parent Application
+          # so App-of-Apps selfHeal re-renders the child with the correct helm.values.
+          # This is durable: kubectl patch on the child is reverted by selfHeal within ~3min.
+          argocd app set app-of-apps \
+            --helm-set "spec.gitops.applications.clusterAutoscaler.irsaRoleArn=${CLUSTER_AUTOSCALER_ARN}" \
+            || true
+
+          echo "Waiting for app-of-apps to re-sync with IRSA ARN..."
+          argocd app wait app-of-apps --operation --timeout 120 || true
+          echo "Waiting for cluster-autoscaler to sync..."
+          argocd app wait cluster-autoscaler --sync --timeout 120 || true
 
           kill $PF_PID 2>/dev/null || true
 

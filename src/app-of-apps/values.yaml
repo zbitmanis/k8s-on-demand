@@ -36,6 +36,9 @@ spec:
         namespace: monitoring
         isEnabled: true
         isEnabledAutoSync: true
+        thanosBucket: ""         # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.thanosBucket=<bucket>
+        awsRegion: ""            # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.awsRegion=<region>
+        workflowRunnerRoleArn: ""  # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.thanosSidecar.workflowRunnerRoleArn=<arn>
 
       ingressNginx:
         appPath: src/applications/ingress-nginx
@@ -48,6 +51,7 @@ spec:
         namespace: kube-system
         isEnabled: true
         isEnabledAutoSync: true
+        irsaRoleArn: ""   # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.clusterAutoscaler.irsaRoleArn=<arn>
 
       awsLoadBalancerController:
         appPath: src/applications/aws-load-balancer-controller
@@ -78,6 +82,9 @@ spec:
         namespace: argo
         isEnabled: true
         isEnabledAutoSync: true
+        artifactsBucket: ""    # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.argoWorkflows.artifactsBucket=<bucket>
+        awsRegion: ""          # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.argoWorkflows.awsRegion=<region>
+        workflowRunnerRoleArn: ""  # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=<arn>
 
       argoEvents:
         appPath: src/applications/argo-events

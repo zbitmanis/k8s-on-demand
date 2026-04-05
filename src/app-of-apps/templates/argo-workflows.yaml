@@ -20,6 +20,19 @@ spec:
         {{- range $val := .Values.spec.default.helm.valueFiles }}
           - {{ $val }}
         {{- end }}
+      {{- if .Values.spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn }}
+      values: |
+        argo-workflows:
+          artifactRepository:
+            s3:
+              bucket: {{ .Values.spec.gitops.applications.argoWorkflows.artifactsBucket | quote }}
+              region: {{ .Values.spec.gitops.applications.argoWorkflows.awsRegion | quote }}
+              roleARN: {{ .Values.spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn | quote }}
+          workflow:
+            serviceAccount:
+              annotations:
+                eks.amazonaws.com/role-arn: {{ .Values.spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn | quote }}
+      {{- end }}
 {{- if .Values.spec.gitops.applications.argoWorkflows.isEnabledAutoSync | default false }}
   syncPolicy:
     automated: {}
