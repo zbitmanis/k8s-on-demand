@@ -7,7 +7,6 @@ cluster-autoscaler:
 
   serviceAccount:
     create: true
-    name: cluster-autoscaler
     annotations:
       # IRSA role ARN injected via ArgoCD app parameter at bootstrap
       eks.amazonaws.com/role-arn: ""
