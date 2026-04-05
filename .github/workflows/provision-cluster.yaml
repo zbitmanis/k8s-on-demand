@@ -195,6 +195,11 @@ jobs:
             --password "$ARGOCD_PASS" \
             --insecure
 
+          # Wait for App-of-Apps to complete its first sync so all child
+          # Applications exist before we run argocd app set on them.
+          echo "Waiting for App-of-Apps to sync..."
+          argocd app wait app-of-apps --operation --timeout 120 || true
+
           CLUSTER_NAME="${{ needs.terraform-apply.outputs.cluster_name }}"
           THANOS_BUCKET="${{ needs.terraform-apply.outputs.thanos_bucket }}"
           ARTIFACTS_BUCKET="${{ needs.terraform-apply.outputs.artifacts_bucket }}"
@@ -208,20 +213,20 @@ jobs:
           argocd app set aws-load-balancer-controller \
             --helm-set "aws-load-balancer-controller.clusterName=${CLUSTER_NAME}" \
             --helm-set "aws-load-balancer-controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
-            2>/dev/null || true
+            || true
 
           # thanos-sidecar: inject metrics bucket
           argocd app set thanos-sidecar \
             --helm-set "thanos.objstoreConfig=type: S3\nconfig:\n  bucket: ${THANOS_BUCKET}\n  region: ${{ vars.AWS_REGION }}\n" \
             --helm-set "thanos.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${WORKFLOW_RUNNER_ARN}" \
-            2>/dev/null || true
+            || true
 
           # argo-workflows: inject artifacts bucket, region, and runner role
           argocd app set argo-workflows \
             --helm-set "argo-workflows.artifactRepository.s3.bucket=${ARTIFACTS_BUCKET}" \
             --helm-set "argo-workflows.artifactRepository.s3.region=${{ vars.AWS_REGION }}" \
             --helm-set "argo-workflows.artifactRepository.s3.roleARN=${WORKFLOW_RUNNER_ARN}" \
-            2>/dev/null || true
+            || true
 
           # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
           argocd app set platform-rbac \
@@ -230,16 +235,25 @@ jobs:
             --helm-set "suspendLambdaName=${SUSPEND_LAMBDA_NAME}" \
             --helm-set "github.org=${GITHUB_ORG}" \
             --helm-set "github.repo=${GITHUB_REPO}" \
-            2>/dev/null || true
+            || true
 
           # cluster-autoscaler: inject cluster name, region, and IRSA role ARN
           argocd app set cluster-autoscaler \
             --helm-set "cluster-autoscaler.autoDiscovery.clusterName=${CLUSTER_NAME}" \
             --helm-set "cluster-autoscaler.awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "cluster-autoscaler.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${CLUSTER_AUTOSCALER_ARN}" \
-            2>/dev/null || true
+            || true
 
           kill $PF_PID 2>/dev/null || true
+
+      - name: Restart cluster-autoscaler to pick up IRSA annotation
+        run: |
+          # argocd app set updates the ServiceAccount annotation but does not
+          # restart existing pods. Rollout restart forces new pods so the EKS
+          # pod identity webhook injects the IRSA token.
+          # SA and Deployment are both named <release>-aws-cluster-autoscaler.
+          kubectl rollout restart deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system
+          kubectl rollout status deployment/cluster-autoscaler-aws-cluster-autoscaler -n kube-system --timeout=120s
 
   # ── 3. Wait for all system apps healthy ──────────────────────────────────
   wait-healthy:
