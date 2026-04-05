@@ -135,6 +135,146 @@ resource "aws_iam_role_policy" "cluster_autoscaler" {
   policy = data.aws_iam_policy_document.cluster_autoscaler_policy.json
 }
 
+# ── Thanos IRSA role ─────────────────────────────────────────────────────────
+
+data "aws_iam_policy_document" "thanos_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:monitoring:thanos-sidecar"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "thanos" {
+  name               = "${var.cluster_name}-thanos-sidecar"
+  assume_role_policy = data.aws_iam_policy_document.thanos_trust.json
+}
+
+data "aws_iam_policy_document" "thanos_policy" {
+  statement {
+    sid    = "ThanosS3"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.thanos_bucket}",
+      "arn:aws:s3:::${var.thanos_bucket}/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "thanos" {
+  name   = "thanos-s3"
+  role   = aws_iam_role.thanos.name
+  policy = data.aws_iam_policy_document.thanos_policy.json
+}
+
+# ── AWS Load Balancer Controller IRSA role ───────────────────────────────────
+
+data "aws_iam_policy_document" "lbc_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:aws:aws-load-balancer-controller"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "lbc" {
+  name               = "${var.cluster_name}-load-balancer-controller"
+  assume_role_policy = data.aws_iam_policy_document.lbc_trust.json
+}
+
+data "aws_iam_policy_document" "lbc_policy" {
+  statement {
+    sid    = "LBCCore"
+    effect = "Allow"
+    actions = [
+      "elasticloadbalancing:*",
+      "ec2:DescribeAccountAttributes",
+      "ec2:DescribeAddresses",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeCoipPools",
+      "ec2:DescribeInstances",
+      "ec2:DescribeInternetGateways",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+      "ec2:GetCoipPoolUsage",
+      "acm:ListCertificates",
+      "acm:DescribeCertificate",
+      "iam:ListServerCertificates",
+      "iam:GetServerCertificate",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "LBCSecurityGroups"
+    effect = "Allow"
+    actions = [
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:CreateSecurityGroup",
+      "ec2:DeleteSecurityGroup",
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "LBCServiceLinkedRole"
+    effect = "Allow"
+    actions = [
+      "iam:CreateServiceLinkedRole",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:AWSServiceName"
+      values   = ["elasticloadbalancing.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "lbc" {
+  name   = "load-balancer-controller"
+  role   = aws_iam_role.lbc.name
+  policy = data.aws_iam_policy_document.lbc_policy.json
+}
+
 # ── EKS managed addons ────────────────────────────────────────────────────────
 
 resource "aws_eks_addon" "metrics_server" {

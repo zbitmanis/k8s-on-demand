@@ -1,0 +1,579 @@
+= IAM Design & Conventions
+:toc: left
+:toclevels: 3
+:icons: font
+:source-highlighter: rouge
+
+== Overview
+
+This document is the operator reference for IAM on the platform. It covers role taxonomy, trust policy patterns, permission boundaries, cluster access, and human operator authentication via Google Workspace.
+
+For the concise rule set used by Claude Code, see link:iam-conventions.md[iam-conventions.md].
+
+== Role Taxonomy
+
+=== Diagram
+
+[plantuml]
+----
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+rectangle "GitHub Actions" {
+  component "platform-terraform-execution" as gha_role
+}
+
+rectangle "EKS System Nodes" {
+  component "platform-argocd-cluster-manager" as argocd_role
+  component "platform-argo-workflow-runner" as argo_role
+}
+
+rectangle "EKS System Nodes (IRSA)" {
+  component "<cluster>-cluster-autoscaler" as ca_role
+  component "<cluster>-load-balancer-controller" as lbc_role
+  component "<cluster>-thanos-sidecar" as thanos_role
+}
+
+rectangle "Per-Tenant Workloads" {
+  component "<tenant>-external-secrets" as eso_role
+  component "<tenant>-thanos-sidecar" as t_thanos_role
+  component "<tenant>-ebs-csi-driver" as ebs_role
+}
+
+rectangle "Human" {
+  component "platform-break-glass\n(MFA required)" as breakglass_role
+  component "platform-ops-cluster-access\n(Google Workspace SSO)" as ops_role
+}
+
+component "GitHub OIDC Provider" as github_oidc
+component "EKS OIDC Provider" as eks_oidc
+component "AWS Admin" as admin
+component "Google Workspace\nSAML Provider" as google_saml
+
+github_oidc --> gha_role: trusts
+eks_oidc --> argocd_role: trusts
+eks_oidc --> argo_role: trusts
+eks_oidc --> ca_role: trusts\n(namespace:SA condition)
+eks_oidc --> lbc_role: trusts\n(namespace:SA condition)
+eks_oidc --> thanos_role: trusts\n(namespace:SA condition)
+eks_oidc --> eso_role: trusts\n(namespace:SA condition)
+eks_oidc --> t_thanos_role: trusts\n(namespace:SA condition)
+eks_oidc --> ebs_role: trusts\n(namespace:SA condition)
+admin --> breakglass_role: trusts\n(MFA)
+google_saml --> ops_role: trusts\n(SAML:hd = company.com)
+
+@enduml
+----
+
+=== Management Plane Roles
+
+Exist once; managed by CloudFormation (`src/terraform/bootstrap/`) or the `iam-management` Terraform module.
+
+[cols="2,2,3"]
+|===
+| Role | Used By | Purpose
+
+| `platform-terraform-execution`
+| GitHub Actions (OIDC)
+| Day 0 cluster setup; Terraform apply only. Cannot modify its own trust policy.
+
+| `platform-argocd-cluster-manager`
+| ArgoCD management plane
+| Cluster registration, kubeconfig generation.
+
+| `platform-argo-workflow-runner`
+| Argo Workflow pods
+| Dispatch GitHub Actions workflows, read tenant config from S3. Does **not** grant any platform system service access.
+
+| `platform-break-glass`
+| Human (MFA required)
+| Emergency read/write cluster access. Logged to CloudTrail; alert fires on every use.
+
+| `platform-ops-cluster-access`
+| Human (Google SAML / `saml2aws`)
+| Day-to-day `kubectl` access. EKS grants group `platform:ops` via ClusterRoleBinding.
+|===
+
+=== Platform System IRSA Roles
+
+Created in `src/terraform/modules/eks-addons/main.tf`. One role per service — trust scoped to the exact service account and namespace.
+
+[cols="2,2,1,3"]
+|===
+| Role | Service Account | Namespace | Permissions
+
+| `<cluster>-cluster-autoscaler`
+| `cluster-autoscaler-aws-cluster-autoscaler`
+| `kube-system`
+| ASG describe/scale, EC2 describe images and launch template versions, EKS describe nodegroup
+
+| `<cluster>-load-balancer-controller`
+| `aws-load-balancer-controller`
+| `aws`
+| `elasticloadbalancing:*`, EC2 describe (VPCs, subnets, SGs), EC2 create/delete/modify SGs, ACM list/describe, `iam:CreateServiceLinkedRole` for ELB
+
+| `<cluster>-thanos-sidecar`
+| `thanos-sidecar`
+| `monitoring`
+| `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:GetBucketLocation` on the metrics bucket only
+|===
+
+IMPORTANT: Never reuse a management plane role (e.g. `platform-argo-workflow-runner`) for a platform system service. Each service must have its own role with the minimum required permissions.
+
+=== Per-Tenant IRSA Roles
+
+Created in `src/terraform/modules/iam-tenant-roles/main.tf` — one set per tenant via `for_each`. All tenant roles carry the tenant Permission Boundary.
+
+[cols="2,2,2,3"]
+|===
+| Role Pattern | Service Account | Namespace | Permissions
+
+| `<tenant>-external-secrets`
+| `external-secrets`
+| `<tenant>`
+| `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret` on `/<tenant>/*` path only
+
+| `<tenant>-thanos-sidecar`
+| `prometheus`
+| `monitoring`
+| S3 `PutObject`/`GetObject` on the platform metrics bucket, tenant-prefix paths
+
+| `<tenant>-load-balancer`
+| `aws-load-balancer-controller`
+| `kube-system`
+| `ElasticLoadBalancingFullAccess` (tenant-tagged resources)
+
+| `<tenant>-ebs-csi-driver`
+| `ebs-csi-controller-sa`
+| `kube-system`
+| EC2 volume create, attach, detach, delete; bounded by Permission Boundary
+|===
+
+== IRSA Trust Policy Pattern
+
+Every IRSA trust policy follows this structure. The condition variable key must **not** include the `https://` prefix — `var.oidc_provider_url` already strips it.
+
+[source,hcl]
+----
+data "aws_iam_policy_document" "example_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:<namespace>:<sa-name>"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+----
+
+=== IRSA Flow
+
+[plantuml]
+----
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+
+participant "Pod\n(annotated SA)" as pod
+participant "EKS API Server\n(OIDC Provider)" as eks
+participant "AWS STS" as sts
+participant "AWS Service\n(e.g. S3)" as aws_svc
+
+pod -> eks: 1. Pod starts with annotated ServiceAccount
+eks -> pod: 2. Inject projected token\n(JWT with sub=ns:sa)
+pod -> sts: 3. sts:AssumeRoleWithWebIdentity\n(JWT + role ARN)
+sts -> eks: 4. Validate JWT against\nregistered OIDC provider
+eks -> sts: 5. Sub claim: namespace:serviceaccount
+sts -> pod: 6. Temporary credentials
+pod -> aws_svc: 7. API call with temp credentials
+aws_svc -> pod: 8. Response (subject to IAM policy)
+
+@enduml
+----
+
+== Tenant-Scoped ESO Role — Detailed Example
+
+=== Trust Policy
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<account-id>:oidc-provider/oidc.eks.<region>.amazonaws.com/id/<oidc-id>"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.<region>.amazonaws.com/id/<oidc-id>:sub":
+            "system:serviceaccount:<tenant-id>:external-secrets",
+          "oidc.eks.<region>.amazonaws.com/id/<oidc-id>:aud":
+            "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+----
+
+The `sub` condition binds the role to the External Secrets service account **in the tenant's namespace only**.
+
+=== IAM Policy
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:/<tenant-id>/*"
+    }
+  ]
+}
+----
+
+== Permission Boundaries (Tenant Roles)
+
+All tenant IRSA roles have a Permission Boundary that prevents privilege escalation regardless of what the role's inline policy permits.
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Action": "secretsmanager:*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotLike": {
+          "secretsmanager:SecretId": "arn:aws:secretsmanager:*:*:secret:/<tenant-id>/*"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "<cluster-region>"
+        }
+      }
+    }
+  ]
+}
+----
+
+== EKS Cluster Access (Access Entry API)
+
+`aws-auth` ConfigMap is **not used**. All cluster access is managed through EKS Access Entries (`authentication_mode = "API"`), visible in the AWS Console and auditable in CloudTrail.
+
+[cols="2,3,3,2"]
+|===
+| Entry | IAM Role | Access | Used By
+
+| `terraform`
+| `platform-terraform-execution`
+| `AmazonEKSClusterAdminPolicy` (cluster scope)
+| GitHub Actions (OIDC)
+
+| `break_glass`
+| `platform-break-glass`
+| `AmazonEKSClusterAdminPolicy` (cluster scope)
+| Humans (MFA)
+
+| `argocd`
+| `platform-argocd-cluster-manager`
+| k8s group `platform:argocd` → ClusterRoleBinding
+| ArgoCD IRSA
+
+| `workflow_runner`
+| `platform-argo-workflow-runner`
+| k8s group `platform:workflow-runner` → ClusterRoleBinding
+| Argo Workflows IRSA
+|===
+
+`argocd` and `workflow_runner` use `kubernetes_groups` rather than EKS managed policies: the IAM layer establishes identity only; Kubernetes RBAC controls what they can do.
+
+=== Why Not `system:masters`?
+
+`system:masters` is a built-in Kubernetes group with unconditional cluster-admin that cannot be audited at the RBAC level. `AmazonEKSClusterAdminPolicy` via Access Entry is equivalent in practice but every use appears in CloudTrail and the AWS Console, and can be revoked without touching the cluster.
+
+=== GitHub Actions Cluster Access Chain
+
+[source,hcl]
+----
+# Part 1 — OIDC trust (iam-management module)
+condition {
+  test     = "StringLike"
+  variable = "token.actions.githubusercontent.com:sub"
+  values   = ["repo:<org>/<repo>:*"]
+}
+
+# Part 2 — EKS Access Entry (eks-cluster module)
+access_entries = {
+  terraform = {
+    principal_arn = var.terraform_role_arn
+    type          = "STANDARD"
+    policy_associations = {
+      cluster_admin = {
+        policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        access_scope = { type = "cluster" }
+      }
+    }
+  }
+}
+----
+
+[source,yaml]
+----
+# Part 3 — kubeconfig (provision-cluster.yaml)
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: ${{ secrets.TERRAFORM_ROLE_ARN }}
+    aws-region: ${{ vars.AWS_REGION }}
+
+- run: aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+----
+
+== Terraform Execution Role
+
+The `platform-terraform-execution` role is defined in CloudFormation (`src/terraform/bootstrap/`), not in Terraform. This avoids the bootstrap circular dependency: Terraform needs the role to run, but the role would not exist until Terraform ran.
+
+Apply the CloudFormation stack once manually before any pipeline execution. GitHub org and repo are CloudFormation parameters, not Terraform variables.
+
+*Self-modification protection:*
+
+[source,json]
+----
+{
+  "Effect": "Deny",
+  "Action": "iam:UpdateAssumeRolePolicy",
+  "Resource": "arn:aws:iam::<account-id>:role/platform-terraform-execution"
+}
+----
+
+== Human Operator Authentication
+
+=== Option A — Direct SAML (`saml2aws`)
+
+Used by existing setups. Terraform manages the AWS SAML provider and `platform-ops-cluster-access` role.
+
+After `terraform apply`, retrieve outputs:
+
+[source,bash]
+----
+terraform -chdir=src/terraform/environments/production output saml_acs_url
+terraform -chdir=src/terraform/environments/production output saml_sp_entity_id
+terraform -chdir=src/terraform/environments/production output saml_role_attribute_value
+----
+
+In Google Admin Console → Apps → Web and mobile apps → Add custom SAML app:
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| ACS URL | `https://signin.aws.amazon.com/saml`
+| Entity ID | `urn:amazon:webservices`
+| Name ID format | `EMAIL`
+| Name ID | Basic Information → Primary email
+| Attribute mapping: `Role` | `<saml_provider_arn>,<ops_role_arn>` (from output)
+| Attribute mapping: `RoleSessionName` | Primary email
+|===
+
+Store the downloaded IdP metadata XML as a GitHub secret:
+
+[source,bash]
+----
+gh secret set GOOGLE_SAML_METADATA_XML < path/to/downloaded-metadata.xml
+----
+
+Configure `saml2aws` locally:
+
+[source,bash]
+----
+saml2aws configure \
+  --idp-provider GoogleApps \
+  --url https://accounts.google.com/o/saml2/initsso?idpid=<your-idp-id> \
+  --role <ops_cluster_access_role_arn>
+
+saml2aws login
+aws eks update-kubeconfig --name platform-dev --region eu-west-1
+----
+
+=== Option B — IAM Identity Center (Preferred for New Setups)
+
+Identity Center acts as a central broker: one SAML trust between Google and Identity Center, then fine-grained Permission Sets per account. Preferred over Direct SAML for all new setups.
+
+==== Step 1 — Enable Identity Center
+
+In the AWS Console, open IAM Identity Center and enable it (standalone account or Organization management account). Note the **Instance ARN** and **Access portal URL**.
+
+==== Step 2 — Register Google Workspace as External IdP
+
+. In Identity Center → Settings → Identity source → Change identity source → External identity provider.
+. Upload the Google IdP metadata XML.
+. Copy the Identity Center ACS URL and SP Entity ID shown on this screen.
+
+In Google Admin Console → Apps → Web and mobile apps → Add custom SAML app:
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| ACS URL | `https://region.signin.aws/platform/saml/acs/<instance-id>` (from Identity Center console)
+| Entity ID | `urn:amazon:webservices:sso`
+| Name ID format | `EMAIL`
+| Name ID | Basic Information → Primary email
+|===
+
+No `Role` attribute mapping is needed — Identity Center uses SCIM group membership.
+
+==== Step 3 — Optional: SCIM Provisioning
+
+. In Identity Center Settings → Identity source → enable Automatic provisioning. Copy the SCIM endpoint URL and access token.
+. In Google Admin, open the Identity Center SAML app → Auto-provisioning → enter the SCIM endpoint and token.
+. Map Google groups to Identity Center groups.
+
+==== Step 4 — Create Permission Set
+
+Create a Permission Set named `PlatformOpsClusterAccess`:
+
+* Session duration: 8 hours
+* Inline policy:
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EKSTokenGeneration",
+      "Effect": "Allow",
+      "Action": ["eks:DescribeCluster", "eks:ListClusters"],
+      "Resource": "*"
+    }
+  ]
+}
+----
+
+Add an EKS Access Entry for the Identity Center role ARN pattern:
+
+[source]
+----
+arn:aws:iam::<account-id>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_PlatformOpsClusterAccess_*
+----
+
+Assign Kubernetes group `platform:ops`.
+
+==== Step 5 — Account Assignment
+
+In Identity Center → AWS accounts → select account → Assign users or groups → select the platform engineers group → select `PlatformOpsClusterAccess`.
+
+==== Step 6 — Developer Workflow
+
+One-time setup:
+
+[source,bash]
+----
+aws configure sso --profile platform-ops
+# SSO start URL: https://<instance-id>.awsapps.com/start
+# SSO region:    eu-west-1
+----
+
+Daily use:
+
+[source,bash]
+----
+aws sso login --profile platform-ops
+aws eks update-kubeconfig --name <cluster-name> --region eu-west-1 --profile platform-ops
+kubectl get namespaces
+----
+
+==== Standalone Account vs. Organization Mode
+
+[cols="2,2,2"]
+|===
+| Concern | Organization Mode | Standalone Mode
+
+| Where Identity Center is enabled
+| Management account (or delegated admin)
+| Directly on the standalone account
+
+| Account assignment
+| Select from any account in the Org tree
+| Single account only; assignment UI still exists but lists one entry
+
+| Cross-account access
+| Supported
+| Not possible without joining an Organization
+
+| Migration to Organization mode
+| N/A
+| Hard cut-over — all Permission Sets and assignments must be re-created in the Org-level instance
+|===
+
+== IAM Naming Convention
+
+[source]
+----
+# Management plane
+platform-<component>
+  platform-terraform-execution
+  platform-argo-workflow-runner
+  platform-break-glass
+
+# Platform system IRSA
+<cluster-name>-<component>
+  platform-dev-cluster-autoscaler
+  platform-dev-load-balancer-controller
+  platform-dev-thanos-sidecar
+
+# Per-tenant IRSA
+<tenant-id>-<component>
+  acme-corp-external-secrets
+  acme-corp-thanos-sidecar
+  acme-corp-ebs-csi-driver
+----
+
+All IAM resource names follow this pattern. Terraform modules enforce it via local name construction.
+
+== Auditing
+
+All IAM API calls are captured in CloudTrail. Alerts are configured for:
+
+* Any `iam:CreateRole` or `iam:AttachRolePolicy` outside the Terraform execution role
+* Any `sts:AssumeRole` using the break-glass role
+* Any failed `sts:AssumeRoleWithWebIdentity` (misconfiguration or attack)
+* Any cross-region API call from a tenant workload
