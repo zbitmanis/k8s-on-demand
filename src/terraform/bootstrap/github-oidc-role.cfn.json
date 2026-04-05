@@ -198,11 +198,13 @@
                     "ec2:RevokeSecurityGroupEgress",
                     "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
                     "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+                    "ec2:RunInstances",
                     "ec2:CreateLaunchTemplate",
                     "ec2:DeleteLaunchTemplate",
                     "ec2:CreateLaunchTemplateVersion",
                     "ec2:DeleteLaunchTemplateVersions",
                     "ec2:ModifyLaunchTemplate",
+                    "ec2:DescribeLaunchTemplateVersions",
                     "ec2:CreateNetworkAcl",
                     "ec2:DeleteNetworkAcl",
                     "ec2:CreateNetworkAclEntry",
@@ -246,6 +248,8 @@
                     "eks:ListAccessEntries",
                     "eks:ListAccessPolicies",
                     "eks:ListAssociatedAccessPolicies",
+                    "eks:DescribeUpdate",
+                    "eks:ListUpdates",
                     "eks:CreateOidcToken",
                     "eks:DescribeIdentityProviderConfig",
                     "eks:AssociateIdentityProviderConfig",
@@ -265,6 +269,7 @@
                     "kms:GetKeyRotationStatus",
                     "kms:ListResourceTags",
                     "kms:PutKeyPolicy",
+                    "kms:UpdateKeyDescription",
                     "kms:ScheduleKeyDeletion",
                     "kms:CreateAlias",
                     "kms:DeleteAlias",
@@ -307,6 +312,31 @@
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-ebs-csi-driver" },
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-vpc-cni" },
                     { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/*-cluster-suspend-role" }
+                  ]
+                },
+
+                {
+                  "Sid": "IAMReadServiceLinkedRoles",
+                  "Effect": "Allow",
+                  "Action": "iam:GetRole",
+                  "Resource": "arn:aws:iam::*:role/aws-service-role/*"
+                },
+
+                {
+                  "Sid": "IAMInstanceProfiles",
+                  "Effect": "Allow",
+                  "Action": [
+                    "iam:CreateInstanceProfile",
+                    "iam:DeleteInstanceProfile",
+                    "iam:GetInstanceProfile",
+                    "iam:AddRoleToInstanceProfile",
+                    "iam:RemoveRoleFromInstanceProfile",
+                    "iam:TagInstanceProfile",
+                    "iam:UntagInstanceProfile",
+                    "iam:ListInstanceProfiles"
+                  ],
+                  "Resource": [
+                    { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:instance-profile/platform-*" }
                   ]
                 },
 
