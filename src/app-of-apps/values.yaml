@@ -25,6 +25,12 @@ spec:
         isEnabled: true
         isEnabledAutoSync: true
 
+      argocd:
+        appPath: src/applications/argocd
+        namespace: argocd
+        isEnabled: true
+        isEnabledAutoSync: true
+
       externalSecretsOperator:
         appPath: src/applications/external-secrets-operator
         namespace: external-secrets
