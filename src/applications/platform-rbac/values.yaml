@@ -1,5 +1,6 @@
 # Injected at deploy time by provision-cluster.yaml via argocd app set --helm-set
 workflowRunnerRoleArn: ""
+esoRoleArn: ""
 awsRegion: ""
 suspendLambdaName: ""
 github:

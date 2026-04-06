@@ -179,6 +179,7 @@ jobs:
           LBC_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-load-balancer-controller"
           THANOS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-thanos-sidecar"
           PROMETHEUS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-prometheus-thanos-sidecar"
+          ESO_PLATFORM_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-eso-platform"
           SUSPEND_LAMBDA_NAME="${CLUSTER_NAME}-cluster-suspend"
 
           # Inject all runtime values via App-of-Apps (durable through selfHeal)
@@ -200,9 +201,10 @@ jobs:
             --helm-set "spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
+          # platform-rbac: inject github org/repo, workflow runner role ARN, ESO platform role, and suspend config
           argocd app set platform-rbac \
             --helm-set "workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
+            --helm-set "esoRoleArn=${ESO_PLATFORM_ARN}" \
             --helm-set "awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "suspendLambdaName=${SUSPEND_LAMBDA_NAME}" \
             --helm-set "github.org=${GITHUB_ORG}" \
