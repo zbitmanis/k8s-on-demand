@@ -9,6 +9,11 @@ on:
         default: staging
         type: choice
         options: [staging, production]
+      force_argocd_install:
+        description: 'Pass --force to helm upgrade (replaces immutable resources). Use only when ArgoCD upgrade fails due to immutable field conflicts.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -120,6 +125,18 @@ jobs:
 
       - name: Install ArgoCD
         run: |
+          # Bootstrap only: install ArgoCD on a fresh cluster.
+          # Once installed, ArgoCD self-manages its own Helm release via the argocd
+          # Application in app-of-apps — never upgrade from here (dual-writer conflict).
+          # For maintenance upgrades bump appVersion in src/applications/argocd/Chart.yaml
+          # and let ArgoCD self-sync. For break-glass force-reinstall set
+          # force_argocd_install=true — this skips the exists check and reinstalls.
+          if helm status argocd -n "${{ env.ARGOCD_NAMESPACE }}" &>/dev/null \
+              && [[ "${{ inputs.force_argocd_install }}" != "true" ]]; then
+            echo "ArgoCD already installed and force_argocd_install=false — skipping (ArgoCD self-manages)"
+            exit 0
+          fi
+
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
           helm dependency build src/applications/argocd/
@@ -179,6 +196,7 @@ jobs:
           LBC_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-load-balancer-controller"
           THANOS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-thanos-sidecar"
           PROMETHEUS_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-prometheus-thanos-sidecar"
+          ESO_PLATFORM_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-eso-platform"
           SUSPEND_LAMBDA_NAME="${CLUSTER_NAME}-cluster-suspend"
 
           # Inject all runtime values via App-of-Apps (durable through selfHeal)
@@ -200,9 +218,10 @@ jobs:
             --helm-set "spec.gitops.applications.argoWorkflows.workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
             || true
 
-          # platform-rbac: inject github org/repo, workflow runner role ARN, and suspend config
+          # platform-rbac: inject github org/repo, workflow runner role ARN, ESO platform role, and suspend config
           argocd app set platform-rbac \
             --helm-set "workflowRunnerRoleArn=${WORKFLOW_RUNNER_ARN}" \
+            --helm-set "esoRoleArn=${ESO_PLATFORM_ARN}" \
             --helm-set "awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "suspendLambdaName=${SUSPEND_LAMBDA_NAME}" \
             --helm-set "github.org=${GITHUB_ORG}" \

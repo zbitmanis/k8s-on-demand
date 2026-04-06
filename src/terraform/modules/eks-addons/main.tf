@@ -310,6 +310,55 @@ resource "aws_iam_role_policy" "lbc" {
   policy = data.aws_iam_policy_document.lbc_policy.json
 }
 
+# ── ESO platform IRSA role ───────────────────────────────────────────────────
+# Used by ClusterSecretStore/platform to read /platform/* secrets from Secrets Manager.
+# Trusted by the external-secrets SA (external-secrets namespace) via OIDC.
+
+data "aws_iam_policy_document" "eso_platform_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:external-secrets:external-secrets"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eso_platform" {
+  name               = "${var.cluster_name}-eso-platform"
+  assume_role_policy = data.aws_iam_policy_document.eso_platform_trust.json
+}
+
+data "aws_iam_policy_document" "eso_platform_policy" {
+  statement {
+    sid    = "PlatformSecretsRead"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [
+      "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:/platform/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "eso_platform" {
+  name   = "eso-platform-secrets"
+  role   = aws_iam_role.eso_platform.name
+  policy = data.aws_iam_policy_document.eso_platform_policy.json
+}
+
 # ── EKS managed addons ────────────────────────────────────────────────────────
 
 resource "aws_eks_addon" "metrics_server" {

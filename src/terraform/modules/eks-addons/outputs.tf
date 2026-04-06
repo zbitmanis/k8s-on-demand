@@ -22,3 +22,8 @@ output "prometheus_thanos_role_arn" {
   description = "IAM role ARN for the Prometheus Thanos sidecar container"
   value       = aws_iam_role.prometheus_thanos.arn
 }
+
+output "eso_platform_role_arn" {
+  description = "IAM role ARN for ESO ClusterSecretStore/platform (/platform/* secrets)"
+  value       = aws_iam_role.eso_platform.arn
+}
