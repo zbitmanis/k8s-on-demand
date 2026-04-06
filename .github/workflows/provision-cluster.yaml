@@ -9,6 +9,11 @@ on:
         default: staging
         type: choice
         options: [staging, production]
+      force_argocd_install:
+        description: 'Pass --force to helm upgrade (replaces immutable resources). Use only when ArgoCD upgrade fails due to immutable field conflicts.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -120,6 +125,18 @@ jobs:
 
       - name: Install ArgoCD
         run: |
+          # Bootstrap only: install ArgoCD on a fresh cluster.
+          # Once installed, ArgoCD self-manages its own Helm release via the argocd
+          # Application in app-of-apps — never upgrade from here (dual-writer conflict).
+          # For maintenance upgrades bump appVersion in src/applications/argocd/Chart.yaml
+          # and let ArgoCD self-sync. For break-glass force-reinstall set
+          # force_argocd_install=true — this skips the exists check and reinstalls.
+          if helm status argocd -n "${{ env.ARGOCD_NAMESPACE }}" &>/dev/null \
+              && [[ "${{ inputs.force_argocd_install }}" != "true" ]]; then
+            echo "ArgoCD already installed and force_argocd_install=false — skipping (ArgoCD self-manages)"
+            exit 0
+          fi
+
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
           helm dependency build src/applications/argocd/
