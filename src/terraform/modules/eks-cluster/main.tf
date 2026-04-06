@@ -162,6 +162,28 @@ module "eks" {
     } : k => v if v != null
   }
 
+  # ── Node security group — additional ingress rules ───────────────────────────
+  node_security_group_additional_rules = {
+    # Control plane → node/pod on 10251 (kube-scheduler metrics scraping)
+    ingress_control_plane_10251 = {
+      description                   = "Control plane to node port 10251"
+      protocol                      = "tcp"
+      from_port                     = 10251
+      to_port                       = 10251
+      type                          = "ingress"
+      source_cluster_security_group = true
+    }
+    # metrics-server → kubelet on 10250 (node-to-node; metrics-server scrapes all kubelets)
+    ingress_metrics_server_kubelet_10250 = {
+      description = "metrics-server to kubelet port 10250"
+      protocol    = "tcp"
+      from_port   = 10250
+      to_port     = 10250
+      type        = "ingress"
+      self        = true
+    }
+  }
+
   eks_managed_node_groups = {
     # System node group — runs platform components (ArgoCD, Prometheus, Gatekeeper, etc.)
     # min_size=0 allows the suspend Lambda to scale to zero on schedule.
