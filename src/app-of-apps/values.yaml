@@ -36,6 +36,7 @@ spec:
         namespace: external-secrets
         isEnabled: true
         isEnabledAutoSync: true
+        irsaRoleArn: ""   # injected at bootstrap: argocd app set app-of-apps --helm-set spec.gitops.applications.externalSecretsOperator.irsaRoleArn=<arn>
 
       prometheus:
         appPath: src/applications/prometheus

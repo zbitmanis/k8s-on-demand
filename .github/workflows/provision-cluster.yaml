@@ -209,6 +209,7 @@ jobs:
             --helm-set "spec.gitops.applications.prometheus.thanosBucket=${THANOS_BUCKET}" \
             --helm-set "spec.gitops.applications.prometheus.awsRegion=${{ vars.AWS_REGION }}" \
             --helm-set "spec.gitops.applications.prometheus.irsaRoleArn=${PROMETHEUS_ARN}" \
+            --helm-set "spec.gitops.applications.externalSecretsOperator.irsaRoleArn=${ESO_PLATFORM_ARN}" \
             || true
 
           # argo-workflows: inject artifacts bucket, region, and runner role via app-of-apps (durable through selfHeal)

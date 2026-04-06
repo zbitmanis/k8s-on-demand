@@ -1,6 +1,10 @@
 external-secrets:
   replicaCount: 1
 
+  serviceAccount:
+    name: external-secrets   # override: release name is external-secrets-operator, fullname template would produce that; platform ClusterSecretStore hardcodes this name
+    annotations: {}          # eks.amazonaws.com/role-arn injected at bootstrap via app-of-apps irsaRoleArn
+
   nodeSelector:
     node-role: system
 
