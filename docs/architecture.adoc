@@ -1,0 +1,862 @@
+= Architecture Reference
+:toc: left
+:icons: font
+:source-highlighter: pygments
+
+Last updated: 2026-04-06
+
+== System Purpose
+
+Multi-tenant Kubernetes-as-a-Service platform built on a single shared AWS EKS cluster.
+Each tenant receives a dedicated namespace with enforced isolation via:
+
+* NetworkPolicy (network-level access control)
+* ResourceQuota (compute limits)
+* RBAC (authorization)
+* Gatekeeper (admission policies)
+* ESO (secrets delivery with path-based scoping)
+
+Cluster is fully lifecycle-managed: provisioned on demand when work begins, destroyed when idle (zero cost).
+Cold start ~20-30 minutes; no hibernation or scale-to-zero needed.
+
+== High-Level Architecture
+
+[plantuml]
+----
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam rectangleBorderColor #666666
+skinparam componentBorderColor #666666
+
+rectangle "AWS Account" {
+  rectangle "VPC (10.0.0.0/16)" {
+    rectangle "Public Subnets" {
+      component "NAT Gateway\n(egress)" as nat
+    }
+
+    rectangle "Private Subnets" {
+      rectangle "EKS Control Plane" {
+        component "Kubernetes API\n(managed)" as kapi
+      }
+
+      rectangle "EKS Data Plane\n(shared cluster)" {
+        rectangle "System Node Group\n(0–3 nodes, tainted)" {
+          component "ArgoCD" as argocd
+          component "Prometheus\n+ Thanos sidecar" as prom
+          component "ESO" as eso
+          component "Gatekeeper" as gk
+          component "Ingress Controller" as ingress
+          component "Crossplane\n+ AWS Provider" as cxp
+          component "Argo Workflows" as wf
+          component "Argo Events" as ae
+        }
+
+        rectangle "Workload Node Group\n(0–20 nodes, CA-managed)" {
+          component "Tenant A\nNamespace\n(pod workloads)" as ta
+          component "Tenant B\nNamespace\n(pod workloads)" as tb
+          component "Tenant N\nNamespace" as tn
+        }
+      }
+    }
+  }
+
+  rectangle "AWS Services" {
+    component "S3\n(per-tenant buckets,\nThanos metrics)" as s3
+    component "Secrets Manager\n(tenant secrets,\nscoped to /<tenant-id>/*)" as sm
+    component "RDS\n(per-tenant databases)" as rds
+    component "SQS\n(per-tenant queues)" as sqs
+    component "IAM\n(IRSA roles)" as iam
+    component "ALB\n(ingress load balancer)" as alb
+    component "EventBridge\n(schedule triggers)" as eb
+    component "Lambda\n(suspend/resume logic)" as lambda
+  }
+}
+
+rectangle "GitHub" {
+  component "Git Repository\n(IaC, GitOps)" as git
+  component "GitHub Actions\n(Terraform pipeline)" as gha
+}
+
+kapi --> nat : egress
+argocd --> git : pulls app manifests
+argocd --> cxp : syncs Compositions
+argocd --> ta : ApplicationSet delivery
+argocd --> tb : ApplicationSet delivery
+argocd --> tn : ApplicationSet delivery
+
+prom --> ta : scrapes metrics
+prom --> tb : scrapes metrics
+prom --> tn : scrapes metrics
+prom --> s3 : Thanos sidecar\n(5 min upload)
+
+eso --> sm : watches/syncs secrets
+eso --> ta : creates Secrets\n(per namespace)
+eso --> tb : creates Secrets
+eso --> tn : creates Secrets
+
+cxp --> sm : reads config (IRsa)
+cxp --> s3 : creates buckets (IRSA)
+cxp --> rds : creates databases (IRSA)
+cxp --> sqs : creates queues (IRSA)
+cxp --> iam : manages IAM roles (IRSA)
+
+wf --> cxp : submits tenant Claims\n(namespace provisioning)
+
+ae --> wf : triggers workflows\n(webhook events)
+
+ingress --> alb : manages ALB targets
+ta --> ingress : HTTP/HTTPS routes
+tb --> ingress : HTTP/HTTPS routes
+tn --> ingress : HTTP/HTTPS routes
+
+eb --> lambda : cron schedule\n(suspend/resume)
+lambda --> eb : queries nodes\n(IRSA)
+
+gha --> git : pull request CI
+gha --> kapi : kubectl apply\n(Day 0 only)
+
+git --> gha : webhook trigger\n(PR merged)
+
+@enduml
+----
+
+== Component Responsibilities and Boundaries
+
+[cols="1,2,2,1"]
+|===
+| Component | Phase | Responsibility | IRSA Role |
+
+| **Terraform**
+| Day 0
+| VPC, subnets, EKS cluster, IAM roles, OIDC provider, node groups, KMS key, EBS CSI add-on
+| `oidc` (GitHub OIDC)
+
+| **GitHub Actions**
+| Day 0
+| Terraform plan/apply pipeline, drift detection, node group updates
+| (inherits from Terraform role)
+
+| **Ansible**
+| Day 0
+| Node bootstrap, OS hardening, container runtime config, CloudWatch agent setup
+| (EC2 instance role during bootstrap)
+
+| **ArgoCD**
+| Day 1
+| System app deployment (once), tenant ApplicationSets (continuous sync from Git)
+| Yes: `${cluster_name}-argocd` (read manifests)
+
+| **Crossplane + AWS Provider**
+| Day 1
+| Per-tenant AWS resources: S3 buckets, IAM roles, RDS instances, SQS queues
+| Yes: `${cluster_name}-crossplane` (write all AWS resources scoped by tenant)
+
+| **Argo Workflows**
+| Day 1
+| Namespace provisioning, NetworkPolicy, ResourceQuota, RBAC, ArgoCD Project, ClusterSecretStore setup
+| Yes: `${cluster_name}-argo-workflows` (read/write Kubernetes, submit Crossplane Claims)
+
+| **Argo Events**
+| Day 1
+| HTTP/webhook event ingestion, event filtering, Argo Workflow trigger routing
+| No (Kubernetes API access via service account)
+
+| **Cluster Autoscaler**
+| Day 0
+| Workload node group scaling (0–20 nodes) based on pending pod demand
+| Yes: `${cluster_name}-cluster-autoscaler` (ASG SetDesiredCapacity, TerminateInstance)
+
+| **Lambda + EventBridge**
+| Day 0
+| System node group suspension/resumption on business day schedule (cost saving)
+| Yes: `${cluster_name}-lambda-suspend-resume` (ASG SetDesiredCapacity)
+
+| **External Secrets Operator (ESO)**
+| Day 1
+| Watch AWS Secrets Manager, create/update Kubernetes Secrets per namespace
+| Yes: `${cluster_name}-external-secrets-operator` (read Secrets Manager `/${tenant-id}/*`)
+
+| **Prometheus**
+| Observability
+| Scrape metrics from all namespaces, label by `namespace`, remote write to Thanos
+| No (in-cluster scrape via Kubernetes service discovery)
+
+| **Thanos Sidecar**
+| Observability
+| Aggregate Prometheus metrics, upload to S3 (`k8s-od-thanos-metrics` bucket)
+| Yes: `${cluster_name}-thanos` (S3 write to Thanos bucket only)
+
+| **Gatekeeper**
+| Admission
+| Cluster-wide policy enforcement (no privileged pods, no host network, no system taint on tenant pods)
+| No (admission webhook, no external API calls)
+
+|===
+
+== Day 0 vs Day 1 Responsibility
+
+[cols="1,3,3"]
+|===
+| Concern | Day 0 (Cluster Setup) | Day 1 (Tenant Onboarding)
+
+| **When**
+| Runs once per cluster creation (or rarely on cluster upgrade)
+| Runs per tenant (continuous GitOps)
+
+| **AWS Infrastructure**
+| VPC, subnets, NAT, EKS control plane, node group ASGs, KMS key, EBS CSI
+| Per-tenant S3, IAM roles, RDS, SQS, Secrets Manager paths
+
+| **Kubernetes Objects**
+| System namespaces (kube-system, prometheus, argo-workflows, argo-events); node pools
+| Tenant namespaces, NetworkPolicy, ResourceQuota, RBAC, ServiceAccounts, ArgoCD Projects
+
+| **Tooling**
+| Terraform (VPC/IAM/EKS), Ansible (node bootstrap), kubectl (system apps bootstrap)
+| ArgoCD (sync), Argo Workflows (orchestration), Crossplane (AWS resources)
+
+| **State Management**
+| Terraform state file (AWS S3 backend)
+| Git (tenants/), AWS Secrets Manager (secrets), Kubernetes objects (API)
+
+| **Example**
+a| ----
+# Day 0: Terraform provision
+terraform apply  # Creates VPC, EKS, node groups
+
+# Day 0: Bootstrap system apps
+kubectl apply -f app-of-apps.yaml
+argocd app sync system-apps
+----
+a| ----
+# Day 1: Tenant onboarding webhook received
+# Argo Events → Argo Workflow created
+
+# Workflow provisions namespace, RBAC, secrets binding
+# Crossplane Claims fulfilled (S3, IAM, RDS created in AWS)
+
+# ArgoCD ApplicationSet syncs tenant apps
+argocd app sync tenant-acme-namespace
+----
+
+|===
+
+== Node Group Topology
+
+[cols="1,2,2,2"]
+|===
+| Node Group | Purpose | Taint / Node Selector | Scaling Strategy
+
+| **System (0–3 nodes)**
+| Platform components: ArgoCD, Prometheus, ESO, Gatekeeper, Ingress, Crossplane, Argo Workflows, Argo Events
+|
+Taint: `node-role=system:NoSchedule` +
+Node selector: `node-role: system` +
+(Both required on all system workloads)
+|
+Lambda + EventBridge cron schedule +
+Manual suspend (drain to 0) on day end +
+Manual resume on day start +
+Saves cost when cluster idle
+
+| **Workload (0–20 nodes)**
+| Tenant application pods (all namespaces)
+|
+No taint +
+No selector required
+|
+Cluster Autoscaler (reactive) +
+Scales up on pending pod demand +
+Scales down after 5 min idle +
+Uses least-waste bin packing
+
+|===
+
+=== System Node Group Requirements
+
+All system components **must** specify both `tolerations` and `nodeSelector`:
+
+[source, yaml]
+----
+tolerations:
+  - key: node-role
+    value: system
+    effect: NoSchedule
+
+nodeSelector:
+  node-role: system
+----
+
+**Reason:** Workload node group starts at `desired_size=0`. Without these constraints, system pods remain `Pending` until a workload node is scheduled by CA, breaking the separation and preventing cluster bootstrap.
+
+== Tenant Isolation Model
+
+[cols="1,2,3"]
+|===
+| Boundary | Mechanism | Enforcement & Scope
+
+| **Network Isolation**
+| NetworkPolicy default-deny per namespace + explicit allow rules
+a|
+* Calico or Cilium CNI enforces rules
+* Every tenant namespace has `deny-all-ingress` policy by default
+* Only allows traffic from: same namespace, ingress controller, system namespaces
+* Egress allowed by default (can be restricted per tier)
+* Gatekeeper blocks `allowAllIngress: true` policies
+
+| **Compute Isolation**
+| ResourceQuota per namespace + LimitRange per pod
+a|
+* Kubernetes API admission enforces quota
+* Each tier (dev/staging/prod) gets configured quota in `config.yaml`
+* CPU, memory, storage limits prevent pod starvation
+* LimitRange sets minimum/maximum per container
+
+| **RBAC / Access Control**
+| Namespace-scoped service accounts, roles; cluster-roles forbidden
+a|
+* Tenant service accounts **cannot** access other namespaces
+* Gatekeeper blocks any `ClusterRoleBinding` or `ClusterRole` creation by tenant
+* Tenant **cannot** read/list other tenant secrets, configmaps, pods
+* ArgoCD Project scoped per tenant namespace (isolation via RBAC)
+
+| **Secrets Management**
+| AWS Secrets Manager + ESO ClusterSecretStore scoped to `/<tenant-id>/*` prefix
+a|
+* ESO service account bound to dedicated IAM role
+* Role policy restricts reads to `arn:aws:secretsmanager:*:*:secret:/<tenant-id>/*`
+* ExternalSecret per namespace watches `/<tenant-id>/*` secrets
+* Kubernetes Secret created only in tenant namespace
+* Tenant **cannot** access other tenants' secrets (IAM policy + namespace isolation)
+
+| **Pod Security**
+| Gatekeeper constraints: no privileged pods, no host network, no host mounts, no system taint toleration
+a|
+* Gatekeeper admission controller enforces at pod creation
+* Blocked: `securityContext.privileged=true`, `hostNetwork=true`, `hostPID=true`
+* Blocked: volume types requiring host access (hostPath, etc.)
+* Blocked: toleration for `node-role=system` (prevents tenant pods on system nodes)
+* Enforcement mode: `warn` (audit only, pods not rejected yet)
+* Requires full compliance audit before switching to `deny`
+
+| **Storage**
+| Namespace-scoped PVCs; host mounts forbidden
+a|
+* Kubernetes API restricts PVC creation to owning namespace
+* Gatekeeper blocks hostPath and other privileged volume types
+* Storage class (gp3) is shared but PVCs are namespace-isolated
+* Backups tagged by tenant for billing/isolation
+
+|===
+
+== Tenant Onboarding Flow
+
+[plantuml]
+----
+@startuml
+autonumber
+
+actor User as user
+participant "GitHub / API" as api
+participant "Argo Events" as ae
+participant "Argo Workflows" as wf
+participant "Kubernetes API" as k8s
+participant "Crossplane" as cxp
+participant "AWS API" as aws
+participant "ArgoCD" as argocd
+
+user ->> api: POST /onboard-tenant\n{tenant_id, tier, email}
+api ->> ae: HTTP webhook received\n(EventSource listener)
+ae ->> ae: Validate event\n(schema, fields)
+ae ->> wf: Trigger Argo Workflow\n(Sensor → WorkflowTrigger)
+ae -->> api: Return 202 Accepted
+
+wf ->> wf: Validate tenant config\n(quota tier exists, naming)
+wf ->> k8s: Create namespace\n(labeled: tenant-id=${tenant-id})
+wf ->> k8s: Apply NetworkPolicy\n(default-deny + allow rules)
+wf ->> k8s: Create ResourceQuota\n(cpu, memory, pods from tier config)
+wf ->> k8s: Apply LimitRange\n(min/max per container)
+wf ->> k8s: Create ServiceAccount\n(tenant-admin for RBAC)
+wf ->> k8s: Create namespace Role\n(admin, read workloads)
+wf ->> k8s: Create ClusterSecretStore binding\n(ESO scoped to /${tenant-id}/*)
+wf ->> k8s: Create ArgoCD Project\n(namespace-scoped, RBAC)
+
+wf ->> cxp: Create Crossplane Claims\n(XRCs: S3, IAM, RDS, SQS)
+cxp ->> aws: Fulfill Claims\n(AWS resources created)
+aws -->> cxp: Resources provisioned\n(S3 bucket, IAM role, RDS instance)
+cxp -->> k8s: XRC status Ready
+
+wf ->> k8s: Verify namespace ready\n(all conditions green)
+wf -->> user: Namespace provisioned\n(~2–3 min total)
+
+argocd ->> k8s: ApplicationSet watches tenants/\n(Git directory per tenant)
+argocd ->> k8s: Sync tenant apps\n(Helm charts, manifests)
+k8s -->> user: Tenant workloads deployed
+
+@enduml
+----
+
+**Timeline:**
+1. Webhook received → 1 sec
+2. Namespace + RBAC + quotas + secrets binding → ~30 sec
+3. Crossplane Claims fulfilled (AWS resources) → ~60–90 sec
+4. ArgoCD syncs tenant apps → ~30–60 sec
+5. **Total: ~2–3 minutes**
+
+== Network Topology
+
+[source]
+----
+┌─────────────────────────────────────────────────────────────┐
+│                       AWS Account                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  VPC: 10.0.0.0/16                                          │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Public Subnets (AZ-a, AZ-b, AZ-c)                     │ │
+│  │  10.0.1.0/24 – NAT Gateway, ALB targets               │ │
+│  └───────────────────────────────────────────────────────┘ │
+│         ↓ (NAT egress)                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Private Subnets (AZ-a, AZ-b, AZ-c)                    │ │
+│  │  10.0.10.0/24 – EKS Control Plane                     │ │
+│  │  10.0.20.0/24 – Node Group (System + Workload)        │ │
+│  │  Pod CIDR: 10.244.0.0/16 (overlay, Calico/Cilium)     │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+Ingress Path:
+  Client HTTP/HTTPS
+       ↓
+    ALB (NLB in front, managed by aws-load-balancer-controller)
+       ↓
+  ingress-nginx (system namespace, on system nodes)
+       ↓
+  Service object (per-tenant app, any namespace)
+       ↓
+  Pod (workload node)
+
+Egress Path (no allowlist):
+  Pod (any namespace)
+       ↓
+  Calico/Cilium CNI (tenant namespace policy allows by default)
+       ↓
+  NAT Gateway (10.0.1.0/24 public IP)
+       ↓
+  Internet
+----
+
+== Data Flows
+
+=== Metrics Collection & Storage
+
+[source]
+----
+All Tenant Namespaces (Pods)
+       ↓ (Prometheus scrape port, ServiceMonitor)
+Prometheus Instance
+       (Single instance, scrapes all namespaces)
+       (Adds label: namespace=<ns_name>)
+       ↓ (Remote write, 30 sec flush)
+Prometheus TSDB (PVC, local)
+       ↓ (Sidecar, 5 min upload interval)
+Thanos Sidecar Container
+       ↓ (AWS SigV4, IRSA ${cluster_name}-thanos)
+S3 Bucket: k8s-od-thanos-metrics
+       (Survives cluster destroy)
+       (Retention: 1 year typical)
+
+Grafana queries:
+  Prometheus → short-term (days)
+  Thanos API → long-term (years)
+  Label filter: namespace=<tenant-id>
+----
+
+=== Secrets Delivery
+
+[source]
+----
+AWS Secrets Manager
+  Path: /k8s-od/<tenant-id>/<secret-name>
+  Created by: Crossplane on tenant claim fulfillment
+  Scope: Tenant-specific secrets (API keys, DB passwords, etc.)
+       ↓ (ESO polling, watch, 15 sec default)
+ESO Controller
+       (Service account with IRSA role ${cluster_name}-external-secrets-operator)
+       (Role policy: read /k8s-od/<tenant-id>/*)
+       (Creates ExternalSecret manifest per tenant namespace)
+       ↓ (Kubernetes API watch)
+ExternalSecret Resource
+  namespace: <tenant-id>
+  spec:
+    secretStoreRef: name: tenant-secret-store (ClusterSecretStore)
+    target: name: <secret-name>
+    data:
+      - secretKey: DB_PASSWORD
+        remoteRef:
+          key: /k8s-od/<tenant-id>/db-password
+       ↓ (Kubernetes Secret create)
+Kubernetes Secret
+  namespace: <tenant-id>
+  data:
+    DB_PASSWORD: <decrypted_value>
+       ↓ (Pod env var, volume mount)
+Tenant Pod
+  env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: <secret-name>
+          key: DB_PASSWORD
+----
+
+=== Tenant AWS Resource Provisioning (Crossplane)
+
+[source]
+----
+Argo Workflow (tenant onboarding)
+       ↓ (creates Crossplane Claim manifest)
+XRC (CompositeResourceClaim)
+  apiVersion: aws.platform.internal/v1alpha1
+  kind: S3Bucket | IAMRole | RDSDatabase | SQSQueue
+  namespace: <tenant-id>
+  metadata:
+    name: tenant-<tenant-id>-bucket
+  spec:
+    compositionRef:
+      name: s3-bucket
+    parameters:
+      bucketName: k8s-od-<tenant-id>-app-data
+       ↓ (Crossplane XR controller watches XRC)
+XR (CompositeResource)
+       (Created by composition, managed resource)
+       ↓ (Crossplane AWS Provider with IRSA)
+AWS API (SigV4 signed by ${cluster_name}-crossplane role)
+       ↓ (AWS service creates resource)
+S3 Bucket Created
+  Name: k8s-od-<tenant-id>-app-data
+  Tags: {Owner: tenant-<tenant-id>, Platform: k8s-od}
+  Encryption: KMS (key: ${cluster_name}-kms-key-arn)
+  ACL: Private
+  Versioning: Enabled
+       ↓ (Crossplane XR status: Ready)
+XRC Status: Ready
+       (Workflow observes condition, proceeds to next step)
+       ↓ (ArgoCD syncs secrets ConfigMap)
+Tenant Pod
+  env:
+    - name: S3_BUCKET_NAME
+      value: k8s-od-<tenant-id>-app-data
+----
+
+== Cluster Lifecycle
+
+[source]
+----
+┌──────────────────────────────────────────────────────────────┐
+│                     PROVISION (Day 0)                        │
+├──────────────────────────────────────────────────────────────┤
+│ Trigger: GitHub Actions workflow_dispatch (manual)           │
+│                                                              │
+│ Step 1: terraform apply                                      │
+│   - VPC + subnets (10.0.0.0/16)                              │
+│   - EKS control plane                                        │
+│   - Node groups (System ASG, Workload ASG)                   │
+│   - OIDC provider                                            │
+│   - IAM roles (Terraform, ArgoCD, Crossplane, ESO, etc.)     │
+│   Time: ~15–18 min                                           │
+│                                                              │
+│ Step 2: Bootstrap ArgoCD + system apps                       │
+│   - kubectl apply app-of-apps.yaml                           │
+│   - ArgoCD syncs: prometheus, thanos, gatekeeper, eso, etc.  │
+│   Time: ~3–5 min                                             │
+│                                                              │
+│ Result: Cluster ready for tenant onboarding                  │
+│ Total time: ~20–30 min                                       │
+└──────────────────────────────────────────────────────────────┘
+         ↓
+┌──────────────────────────────────────────────────────────────┐
+│                     OPERATE (Day 1)                          │
+├──────────────────────────────────────────────────────────────┤
+│ Trigger: Webhook / GitHub Actions workflow_dispatch          │
+│                                                              │
+│ Tenant Onboarding (per tenant):                              │
+│   - Argo Workflows: provision namespace                      │
+│   - Crossplane: fulfill AWS resource claims                  │
+│   - ArgoCD: sync tenant applications                         │
+│   Time: ~2–3 min per tenant                                  │
+│                                                              │
+│ Continuous Operations:                                       │
+│   - ArgoCD syncs all Apps (5 min default)                    │
+│   - Cluster Autoscaler: scales workload nodes on demand      │
+│   - Prometheus: scrapes metrics every 30 sec                 │
+│   - Thanos: uploads metrics to S3 every 5 min                │
+│   - EventBridge: triggers Argo Workflows for scheduled jobs  │
+│                                                              │
+│ Monitoring & Observability:                                  │
+│   - Grafana queries Prometheus (short-term)                  │
+│   - Grafana queries Thanos (long-term, >2h)                  │
+│   - Logs: CloudWatch (pod logs, node logs)                   │
+└──────────────────────────────────────────────────────────────┘
+         ↓
+┌──────────────────────────────────────────────────────────────┐
+│                   SUSPEND (Optional)                         │
+├──────────────────────────────────────────────────────────────┤
+│ Trigger: EventBridge cron (5pm daily) or manual workflow     │
+│                                                              │
+│ Soft path (Argo Workflow):                                   │
+│   - Receives webhook / manual trigger                        │
+│   - Scales system ASG to min_size=0                          │
+│   - Scales workload ASG to desired_size=0                    │
+│   - Drains all pods gracefully                               │
+│   - Cluster remains provisioned but idle                     │
+│   Cost: minimal (no nodes, control plane still $0.10/h)      │
+│                                                              │
+│ Hard path (EventBridge + Lambda):                            │
+│   - EventBridge cron at 5pm                                  │
+│   - Lambda: set system ASG desired_count=0                   │
+│   - Lambda: set workload ASG desired_count=0                 │
+│   - EC2 Auto Scaling terminates nodes                        │
+│   - Pods evicted; workloads interrupted (dev/test cluster)   │
+│   Cost: minimal                                              │
+│                                                              │
+│ State Preservation:                                          │
+│   - Git: all configs in Git (tenants/, src/, complete)       │
+│   - AWS Secrets Manager: all tenant secrets (survives)       │
+│   - S3: Thanos metrics, Argo artifacts (survives)            │
+│   - Kubernetes objects: stateless, recreated on resume       │
+└──────────────────────────────────────────────────────────────┘
+         ↓
+┌──────────────────────────────────────────────────────────────┐
+│                    RESUME (Optional)                         │
+├──────────────────────────────────────────────────────────────┤
+│ Trigger: EventBridge cron (9am daily) or manual workflow     │
+│                                                              │
+│ Step 1: Scale system ASG up                                  │
+│   - Lambda: set system ASG desired_count=1 (or configured)   │
+│   - EC2 Auto Scaling launches node                           │
+│   - ArgoCD, Prometheus, ESO pods start                       │
+│   Time: ~2–3 min                                             │
+│                                                              │
+│ Step 2: ArgoCD syncs all apps                                │
+│   - Tenant namespaces restored from Git                      │
+│   - Crossplane Claims re-synced (Cloud resources still exist)│
+│   - Tenant pods start (workload ASG scales on demand)        │
+│   Time: ~1–2 min                                             │
+│                                                              │
+│ Result: Cluster fully operational                            │
+│ Total time: ~5–7 min                                         │
+└──────────────────────────────────────────────────────────────┘
+         ↓
+┌──────────────────────────────────────────────────────────────┐
+│                    DESTROY (End of Session)                  │
+├──────────────────────────────────────────────────────────────┤
+│ Trigger: GitHub Actions workflow_dispatch (manual)           │
+│ Frequency: once per day/session (on-demand cluster)          │
+│                                                              │
+│ Pre-destroy cleanup:                                         │
+│   - Delete all Service (LoadBalancer) objects                │
+│     (prevents orphaned ALB/NLB ENIs blocking VPC delete)     │
+│   - Wait for ALBs to drain                                   │
+│   - ArgoCD apps removed (if synced, safe to delete)          │
+│                                                              │
+│ Step 1: terraform destroy                                    │
+│   - Deletes EKS control plane                                │
+│   - Terminates all nodes                                     │
+│   - Destroys node groups, security groups                    │
+│   - Deletes VPC, subnets, NAT, Internet Gateway              │
+│   - Clears IAM roles (but retains OIDC provider, can delete) │
+│   Time: ~5–10 min                                            │
+│                                                              │
+│ State Recovery (reprovision from scratch):                   │
+│   - Git repository: all IaC + GitOps config present          │
+│     (tenants/, src/, CLAUDE.md, workflows/)                  │
+│   - AWS Secrets Manager: tenant secrets intact               │
+│     (no deletion on cluster destroy)                         │
+│   - S3 buckets: k8s-od-thanos-metrics, k8s-od-argo-artifacts │
+│     (provisioned in src/terraform/bootstrap/, survive)       │
+│   - Terraform state: S3 backend (auto-versioned)             │
+│                                                              │
+│ On next provision (terraform apply):                         │
+│   - Fresh EKS cluster created                                │
+│   - ArgoCD bootstrapped                                      │
+│   - All tenants onboarded from Git (re-idempotent)           │
+│   - ESO re-syncs secrets from AWS Secrets Manager            │
+│   - Tenant workloads resume                                  │
+│   Time: ~25–30 min total                                     │
+└──────────────────────────────────────────────────────────────┘
+----
+
+== Design Rationale
+
+=== Single Shared Cluster (vs Dedicated Clusters per Tenant)
+
+**Chosen:** Single shared cluster with namespace isolation
+
+**Trade-offs:**
+
+* ✓ **Massive cost reduction** — single control plane, single monitoring stack
+* ✓ **Faster onboarding** — tenant creation in ~2–3 minutes (namespace + RBAC, no IaC)
+* ✓ **Simpler operations** — one cluster to patch, monitor, update
+* ✗ **Smaller blast radius** — one tenant's misconfiguration can affect others (mitigated by Gatekeeper, NetworkPolicy, quotas)
+* ✗ **Cluster upgrade affects all** — no tenant-specific control plane versions (acceptable for dev/sandbox)
+* ✗ **Resource contention** — requires careful quota tuning per tier (defined in `config.yaml`)
+
+=== Crossplane Compositions for Day 1 AWS Resources (vs Terraform)
+
+**Chosen:** Crossplane Compositions (GitOps)
+
+**Rationale:**
+
+* ✓ **Kubernetes-native API** — tenants request resources via Claims (XRCs), no Terraform state
+* ✓ **GitOps delivery** — tenant config in Git, ArgoCD syncs Claims, Crossplane fulfills
+* ✓ **Stateless tenant onboarding** — claims are declarative; reapplying is idempotent
+* ✓ **No per-tenant Terraform state** — single Crossplane ProviderConfig manages all tenants
+* ✗ **Crossplane complexity** — requires learning XRDs, Compositions, Claims model
+* ✗ **Debugging** — Crossplane status conditions can be harder to read than `terraform state`
+
+**Key rule:** Never add per-tenant AWS resources to Terraform. Terraform is Day 0 only (cluster infrastructure); all Day 1 tenant resources go through Crossplane Compositions.
+
+=== Argo Workflows for Namespace Provisioning (vs Static Manifests)
+
+**Chosen:** Argo Workflows (orchestrated, multi-step)
+
+**Rationale:**
+
+* ✓ **Stateful orchestration** — namespace → quota → RBAC → ESO → ArgoCD Project (sequential, validated)
+* ✓ **Error handling** — workflow fails on validation errors, logs audit trail
+* ✓ **Audit & retry** — each step is logged, step can be retried without re-creating namespace
+* ✓ **Event-driven** — integrates with Argo Events (webhook → sensor → workflow trigger)
+* ✗ **Complexity** — more moving parts than static manifests
+* ✗ **Debugging** — requires understanding Argo Workflow DAGs and templating
+
+=== Single Prometheus (vs Per-Tenant)
+
+**Chosen:** Single Prometheus instance, label by namespace
+
+**Rationale:**
+
+* ✓ **Cost & operations** — one scrape loop, one TSDB, one backup
+* ✓ **Cross-tenant queries** — Platform team can see all metrics (useful for platform improvements)
+* ✓ **Label isolation** — Grafana/Thanos filter by `namespace` label; tenant cannot see others' metrics
+* ✗ **Noisy metrics** — single instance sees all workloads (mitigated by reasonable cardinality limits)
+
+=== ApplicationSet Pattern (vs Per-Tenant Applications)
+
+**Chosen:** ApplicationSet with tenant generator (per-directory discovery)
+
+**Rationale:**
+
+* ✓ **DRY** — one ApplicationSet template, dynamically creates Applications per tenant
+* ✓ **Auto-discovery** — add `tenants/<tenant-id>/` directory, ApplicationSet creates Application
+* ✓ **Namespace isolation** — each Application scoped to tenant namespace
+* ✗ **Harder to debug** — template variables can be confusing
+
+=== Node Group Scaling Split
+
+**Chosen:** Lambda + EventBridge for system nodes; Cluster Autoscaler for workload nodes
+
+**Rationale:**
+
+* **System nodes (0–3):** Lambda/EventBridge enables explicit suspend/resume on schedule (cost saving)
+  * Cannot use CA because system pods run 24/7 (ArgoCD, Prometheus never idle)
+  * CA would never scale them down
+* **Workload nodes (0–20):** CA scales reactively based on pending pod demand
+  * Cannot use fixed schedule because tenant workloads arrive unpredictably
+  * CA uses least-waste bin packing to minimize node count
+  * Scale-from-zero enabled via ASG resource hints
+
+**Important:** System node group ASG is **not tagged** for CA auto-discovery (`k8s.io/cluster-autoscaler/enabled` tag absent). Only workload group has CA tags. Prevents CA from touching system nodes.
+
+=== Cluster Autoscaler Configuration
+
+See `src/applications/cluster-autoscaler/` Helm values for full config.
+
+**Key settings:**
+
+* `expander: least-waste` — chooses node type that minimizes wasted CPU/memory
+* `scale-down-delay: 5m` — aggressive drain (dev/sandbox context tolerates disruption)
+* `scale-from-zero: true` — enabled via ASG resource hints (`cpu=2, memory=4Gi`)
+  * Without hints, CA cannot estimate node capacity and will not scale from 0
+* `skip-nodes-with-system-pods: false` — safe because system pods run on system nodes (separate ASG)
+
+**IRSA role:** `${cluster_name}-cluster-autoscaler`
+* Policy: `SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup` on workload group ASG only
+* Condition: ASG tagged with `k8s.io/cluster-autoscaler/enabled=true`
+
+=== Cluster Suspend / Resume
+
+**Soft path (preferred for development):**
+* Argo Workflow triggered by webhook or manual dispatch
+* Gracefully scales node groups to 0
+* Cluster remains provisioned; pods evicted cleanly
+
+**Hard path (cost optimization):**
+* EventBridge cron schedule (5pm daily)
+* Lambda scales node groups to 0
+* Pods interrupted (acceptable for dev/sandbox)
+
+**Resumption:**
+* EventBridge cron (9am daily) or manual
+* Lambda scales system ASG up
+* ArgoCD re-syncs all apps
+* Workload ASG scales on demand
+* Total time: ~5–7 min
+
+=== Bootstrap Buckets (Survive Cluster Destroy)
+
+**Provisioned in:** `src/terraform/bootstrap/` (separate Terraform state, not in main cluster state)
+
+**Buckets:**
+* `k8s-od-thanos-metrics` — long-term metrics (survives cluster destroy)
+* `k8s-od-argo-artifacts` — workflow artifacts (survives cluster destroy)
+
+**Why separate:**
+* Cluster can be destroyed and re-provisioned without losing historical data
+* Terraform state for bootstrap is distinct from cluster state
+* Allows cluster reprovision using same S3 buckets
+
+=== On-Demand Cluster Lifecycle
+
+**Cold start:** ~20–30 minutes from `terraform apply` to cluster ready
+* Terraform provisioning: ~15–18 min
+* System apps bootstrap: ~3–5 min
+* Total: ~20–25 min
+
+**No hibernation or scale-to-zero needed:** Cluster is fully destroyed when idle (zero control plane cost).
+Reprovision on next work session.
+
+**State recovery:**
+* Git: all IaC and config (complete)
+* AWS Secrets Manager: all tenant secrets (not deleted)
+* S3: Thanos metrics, Argo artifacts (not deleted)
+* Terraform state: S3 backend (versioned)
+
+== Key Constraints & Rules
+
+1. **Never `terraform apply` locally** — all applies must go through GitHub Actions with OIDC
+2. **Terraform is Day 0 only** — no per-tenant resources in Terraform
+3. **Crossplane Compositions are the Day 1 API** — tenants request AWS resources via Claims (XRCs)
+4. **ArgoCD is the source of truth** — no `kubectl apply` directly; all state in Git
+5. **Gatekeeper always on** — never disable admission webhooks without platform lead approval
+6. **IRSA only** — every service with AWS access gets its own dedicated role; no static credentials
+7. **Tenant isolation is mandatory** — every PR touching tenant config requires isolation review
+8. **System components must tolerate system taint** — all system workloads require `tolerations` and `nodeSelector`
+9. **System node group is not CA-managed** — no CA tags on system ASG; Lambda/EventBridge control suspend/resume
+10. **NetworkPolicy must default-deny** — explicit allow rules per namespace, no allow-all policies
+
+== Related Documentation
+
+* link:argocd.md[ArgoCD Structure] — App-of-Apps, ApplicationSets, Projects, Sync Waves
+* link:crossplane.md[Crossplane & Compositions] — XRDs, Claims, AWS Provider config
+* link:argo-workflows.md[Argo Workflows] — Templates, tenant provisioning DAG
+* link:argo-events.md[Argo Events] — Webhook EventSource, Sensors, triggers
+* link:monitoring.adoc[Monitoring — Prometheus & Thanos] — Scrape config, isolation, alerting
+* link:secrets.adoc[Secrets Management] — ESO, ClusterSecretStore, ExternalSecret patterns
+* link:network.md[Network Topology] — VPC CIDR, subnets, CNI, SecurityGroups
+* link:iam-conventions.adoc[IAM Design] — IRSA roles, policies, principle of least privilege
+* link:terraform.md[Terraform Conventions] — Module structure, naming, state management
+* link:ansible.md[Ansible Playbooks] — Node bootstrap, OS hardening
+* link:github-actions.md[GitHub Actions & Pipeline] — Workflows, OIDC, Terraform execution
