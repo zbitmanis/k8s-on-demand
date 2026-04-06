@@ -359,6 +359,116 @@ resource "aws_iam_role_policy" "eso_platform" {
   policy = data.aws_iam_policy_document.eso_platform_policy.json
 }
 
+# ── Crossplane AWS Provider IRSA role ────────────────────────────────────────
+# Assumed by the Crossplane provider-aws pod (SA: crossplane-system/provider-aws).
+# Scoped to resources Crossplane Compositions manage: S3, IAM, RDS.
+
+data "aws_iam_policy_document" "crossplane_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:crossplane-system:provider-aws"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "crossplane" {
+  name               = "${var.cluster_name}-crossplane-provider-aws"
+  assume_role_policy = data.aws_iam_policy_document.crossplane_trust.json
+}
+
+data "aws_iam_policy_document" "crossplane_policy" {
+  # ── S3 ───────────────────────────────────────────────────────────────────────
+  statement {
+    sid    = "S3Manage"
+    effect = "Allow"
+    actions = [
+      "s3:CreateBucket",
+      "s3:DeleteBucket",
+      "s3:GetBucketAcl",
+      "s3:GetBucketLocation",
+      "s3:GetBucketPolicy",
+      "s3:PutBucketPolicy",
+      "s3:DeleteBucketPolicy",
+      "s3:GetBucketPublicAccessBlock",
+      "s3:PutBucketPublicAccessBlock",
+      "s3:GetBucketVersioning",
+      "s3:PutBucketVersioning",
+      "s3:GetBucketTagging",
+      "s3:PutBucketTagging",
+      "s3:GetEncryptionConfiguration",
+      "s3:PutEncryptionConfiguration",
+      "s3:GetLifecycleConfiguration",
+      "s3:PutLifecycleConfiguration",
+      "s3:ListBucket",
+    ]
+    resources = ["*"]
+  }
+
+  # ── IAM (read-only) ───────────────────────────────────────────────────────────
+  statement {
+    sid    = "IAMReadOnly"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:ListPolicyVersions",
+      "iam:ListRoleTags",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+    ]
+    resources = ["*"]
+  }
+
+  # ── RDS ──────────────────────────────────────────────────────────────────────
+  statement {
+    sid    = "RDSManage"
+    effect = "Allow"
+    actions = [
+      "rds:CreateDBInstance",
+      "rds:DeleteDBInstance",
+      "rds:DescribeDBInstances",
+      "rds:ModifyDBInstance",
+      "rds:RebootDBInstance",
+      "rds:AddTagsToResource",
+      "rds:RemoveTagsFromResource",
+      "rds:ListTagsForResource",
+      "rds:CreateDBSubnetGroup",
+      "rds:DeleteDBSubnetGroup",
+      "rds:DescribeDBSubnetGroups",
+      "rds:ModifyDBSubnetGroup",
+      "rds:CreateDBParameterGroup",
+      "rds:DeleteDBParameterGroup",
+      "rds:DescribeDBParameterGroups",
+      "rds:DescribeDBParameters",
+      "rds:ModifyDBParameterGroup",
+      "rds:CreateDBSnapshot",
+      "rds:DeleteDBSnapshot",
+      "rds:DescribeDBSnapshots",
+      "rds:RestoreDBInstanceFromDBSnapshot",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "crossplane" {
+  name   = "crossplane-provider-aws"
+  role   = aws_iam_role.crossplane.name
+  policy = data.aws_iam_policy_document.crossplane_policy.json
+}
+
 # ── EKS managed addons ────────────────────────────────────────────────────────
 
 resource "aws_eks_addon" "metrics_server" {

@@ -27,3 +27,8 @@ output "eso_platform_role_arn" {
   description = "IAM role ARN for ESO ClusterSecretStore/platform (/platform/* secrets)"
   value       = aws_iam_role.eso_platform.arn
 }
+
+output "crossplane_role_arn" {
+  description = "IAM role ARN for the Crossplane AWS Provider"
+  value       = aws_iam_role.crossplane.arn
+}

@@ -129,8 +129,8 @@ spec:
       crossplaneProviderAws:
         appPath: src/crossplane/providers
         namespace: crossplane-system
-        isEnabled: true
-        isEnabledAutoSync: true
+        isEnabled: false   # disabled: IRSA role ARN injection not yet wired; enable once runtime-config.yaml is updated
+        isEnabledAutoSync: false
 
       crossplaneCompositions:
         appPath: src/crossplane/compositions
