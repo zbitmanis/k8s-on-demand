@@ -1,0 +1,55 @@
+argo-cd:
+  # All ArgoCD components run on system nodes (tainted node-role=system:NoSchedule).
+  # Setting global tolerations and nodeSelector avoids per-component duplication.
+  global:
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    nodeSelector:
+      node-role: system
+
+  server:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+  controller:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+
+  repoServer:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+  # redis and dex do not inherit global.nodeSelector in all argo-cd chart versions — set explicitly.
+  redis:
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    nodeSelector:
+      node-role: system
+
+  dex:
+    # Explicit override — see redis comment above.
+    tolerations:
+      - key: node-role
+        operator: Equal
+        value: system
+        effect: NoSchedule
+    nodeSelector:
+      node-role: system
