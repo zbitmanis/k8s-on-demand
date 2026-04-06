@@ -147,7 +147,7 @@ data "aws_iam_policy_document" "thanos_trust" {
     condition {
       test     = "StringEquals"
       variable = "${var.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:monitoring:thanos-sidecar"]
+      values   = ["system:serviceaccount:monitoring:thanos-sidecar-thanos"]
     }
     condition {
       test     = "StringEquals"
