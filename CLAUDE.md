@@ -110,6 +110,7 @@ without touching Terraform state.
 
 ## Docs Index
 
+**Claude Reference** (for Claude Code decision-making):
 - [Architecture Overview](docs/architecture.md)
 - [Tenant Lifecycle](docs/tenant-lifecycle.md)
 - [GitHub Actions & Terraform Pipeline](docs/github-actions.md)
@@ -123,3 +124,9 @@ without touching Terraform state.
 - [Monitoring — Prometheus & Thanos](docs/monitoring.md)
 - [Crossplane AWS Resources](docs/crossplane.md)
 - [Secrets Management](docs/secrets.md)
+
+**Operator References** (detailed procedures, examples, troubleshooting):
+- [IAM Design & Conventions — Detailed Operator Guide](docs/iam-conventions.adoc)
+- [ArgoCD — GitOps Operator Guide](docs/argocd.adoc)
+- [Secrets Management — Operator Guide](docs/secrets.adoc)
+- [Monitoring — Prometheus & Thanos Operator Guide](docs/monitoring.adoc)

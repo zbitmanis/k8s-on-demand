@@ -1,0 +1,696 @@
+= ArgoCD — GitOps Operator Guide
+:toc: left
+:toclevels: 3
+:icons: font
+:source-highlighter: rouge
+
+== Overview
+
+This document is the operator reference for ArgoCD. For the concise rule set used by Claude Code, see link:argocd.md[argocd.md].
+
+ArgoCD is the GitOps engine. It owns the desired state of everything running in the cluster: system apps, per-tenant infrastructure, and tenant workloads. All changes flow through Git; direct `kubectl apply` is forbidden.
+
+== App-of-Apps Pattern
+
+The platform uses a **Helm-based App-of-Apps** chart. A single parent Application generates child Applications for system components and an ApplicationSet for per-tenant workloads.
+
+=== Single Application (System AoA)
+
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: system-app-of-apps
+  namespace: argocd
+spec:
+  project: platform-system
+  source:
+    repoURL: https://github.com/<org>/<repo>.git
+    targetRevision: HEAD
+    path: src/app-of-apps
+    helm:
+      values:
+        spec:
+          destination:
+            server: https://kubernetes.default.svc
+          gitops:
+            applications:
+              prometheus:
+                isEnabled: true
+              gatekeeper:
+                isEnabled: true
+              # ... more apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+----
+
+**Key:** `automated.selfHeal: true` means ArgoCD reverts manual kubectl changes back to Git state.
+
+=== ApplicationSet (Per-Tenant Workloads)
+
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tenant-workloads
+  namespace: argocd
+spec:
+  generators:
+  - git:
+      repoURL: https://github.com/<org>/<repo>.git
+      revision: HEAD
+      directories:
+      - path: "tenants/*"
+        exclude: "_archived"
+  template:
+    metadata:
+      name: "{{path.basenameNormalized}}-workloads"
+    spec:
+      project: "{{path.basenameNormalized}}-project"
+      source:
+        repoURL: https://github.com/<org>/<repo>.git
+        targetRevision: HEAD
+        path: "{{path}}/argocd"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{path.basenameNormalized}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false  # Namespace created by onboarding workflow
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+----
+
+**Discovery:** ApplicationSet scans `tenants/*/` directories. For each matching directory, it creates an Application that deploys from `tenants/<tenant-id>/argocd/`.
+
+**Project:** Dynamically set to `<tenant-id>-project` (created during tenant onboarding).
+
+== Repository Structure
+
+[source]
+----
+src/
+├── app-of-apps/
+│   ├── Chart.yaml
+│   ├── values.yaml                  # Default values for all apps
+│   └── templates/
+│       ├── prometheus.yaml          # System app Application templates
+│       ├── gatekeeper.yaml
+│       ├── ingress-nginx.yaml
+│       ├── cert-manager.yaml
+│       ├── external-secrets-operator.yaml
+│       ├── aws-load-balancer-controller.yaml
+│       ├── thanos-sidecar.yaml
+│       └── tenant-applicationset.yaml
+│
+└── applications/                    # Per-system-app Helm wrapper charts
+    ├── prometheus/
+    │   ├── Chart.yaml
+    │   ├── values.yaml              # Prometheus-specific values
+    │   └── templates/
+    │       ├── deployment.yaml
+    │       └── ...
+    ├── gatekeeper/
+    │   └── ...
+    ├── external-secrets-operator/
+    │   └── ...
+    └── # ... more apps
+
+tenants/
+├── _registry/
+│   └── tenants.yaml                # All active tenants (optional metadata)
+├── acme-corp/
+│   ├── config.yaml                 # Tenant metadata, quotas, tier
+│   ├── values/
+│   │   └── app-of-apps.yaml        # AoA value overrides (if any)
+│   └── argocd/
+│       └── apps.yaml               # Tenant's Applications
+├── globex/
+│   └── ...
+└── _archived/                       # Offboarded tenants
+    └── old-tenant/
+        └── ...
+----
+
+== App-of-Apps Values Structure
+
+All defaults live in `src/app-of-apps/values.yaml`:
+
+[source,yaml]
+----
+spec:
+  destination:
+    server: https://kubernetes.default.svc    # In-cluster
+
+  default:
+    repoURL: https://github.com/<org>/<repo>.git
+    helm:
+      valueFiles:
+        - values.yaml
+
+  source:
+    targetRevision: HEAD
+
+  gitops:
+    applications:
+
+      # System app entry
+      prometheus:
+        appPath: src/applications/prometheus
+        namespace: monitoring
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      gatekeeper:
+        appPath: src/applications/gatekeeper
+        namespace: gatekeeper-system
+        isEnabled: true
+        isEnabledAutoSync: true
+
+      # ... more apps
+----
+
+=== System App Template Pattern
+
+Each system app in `src/app-of-apps/templates/` is conditional:
+
+[source,yaml]
+----
+{{- if .Values.spec.gitops.applications.prometheus.isEnabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform-system
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.prometheus.namespace }}
+  source:
+    repoURL: {{ .Values.spec.gitops.applications.prometheus.repoURL | default .Values.spec.default.repoURL }}
+    path: {{ .Values.spec.gitops.applications.prometheus.appPath }}
+    targetRevision: {{ .Values.spec.gitops.applications.prometheus.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+      # Tenant-specific overrides (if exists)
+      {{- if .Values.spec.gitops.applications.prometheus.helmValues }}
+      values: {{ .Values.spec.gitops.applications.prometheus.helmValues | toJson }}
+      {{- end }}
+
+  {{- if .Values.spec.gitops.applications.prometheus.isEnabledAutoSync }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  {{- end }}
+{{- end }}
+----
+
+**Features:**
+- `isEnabled: false` → template renders nothing; app does not exist
+- `isEnabledAutoSync: false` → app exists but requires manual sync
+- All fields fall back to defaults via `| default`
+- `resources-finalizer` ensures child resources are deleted when the Application is removed
+
+== Per-Tenant Value Overrides
+
+When a tenant needs custom app configuration, override in their values file:
+
+[source,yaml]
+----
+# tenants/acme-corp/values/app-of-apps.yaml
+spec:
+  gitops:
+    applications:
+      # Optional: disable Thanos sidecar for free-tier tenants
+      thanosSidecar:
+        isEnabled: false
+
+      # Optional: override Prometheus scrape interval for a tenant
+      prometheus:
+        helmValues: |
+          prometheusSpec:
+            scrapeInterval: 30s
+----
+
+These are merged with the system defaults when rendering the App-of-Apps.
+
+== Per-Tenant Applications
+
+Each tenant creates their own Applications under `tenants/<tenant-id>/argocd/`:
+
+[source,yaml]
+----
+# tenants/acme-corp/argocd/apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: acme-api
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: acme-corp-project
+  source:
+    repoURL: https://github.com/acme/api-deployment.git
+    targetRevision: main
+    path: k8s/
+    helm:
+      releaseName: api
+      values: |
+        replicas: 3
+        image: acme-api:v1.2.3
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: acme-corp
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false  # Namespace already exists
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 2m
+----
+
+**Project:** Must be `<tenant-id>-project` (created during onboarding; enforces namespace isolation)
+
+**Repo:** Tenant controls their own app repository (or mono-repo)
+
+**Destination:** Must be the tenant's namespace (enforced by AppProject)
+
+== ArgoCD Projects
+
+=== Platform-System Project
+
+Used for system apps (App-of-Apps and all infrastructure):
+
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-system
+  namespace: argocd
+spec:
+  sourceRepos:
+    - 'https://github.com/<org>/<repo>.git'
+  destinations:
+    - server: '*'
+      namespace: '*'
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: 'ClusterRole'
+    - group: '*'
+      kind: 'ClusterRoleBinding'
+    - group: '*'
+      kind: 'CustomResourceDefinition'
+    - group: '*'
+      kind: 'Namespace'
+    - group: '*'
+      kind: 'NetworkPolicy'
+    - group: '*'
+      kind: 'ResourceQuota'
+    # ... more cluster-scoped resources
+----
+
+**Permissions:** Can deploy to any namespace and create cluster-scoped resources.
+
+=== Per-Tenant Projects
+
+Created during onboarding for each tenant:
+
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: acme-corp-project
+  namespace: argocd
+spec:
+  sourceRepos:
+    - 'https://github.com/<org>/<repo>.git'
+    - 'https://github.com/acme/*'  # Tenant's own repos
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: acme-corp
+  clusterResourceWhitelist:
+    - group: ''
+      kind: 'Namespace'
+  clusterResourceBlacklist:
+    - group: '*'
+      kind: '*'
+----
+
+**Restrictions:**
+- Can deploy to `acme-corp` namespace only
+- Can create cluster-scoped Namespace (to create sub-namespaces if needed)
+- Blocked from all other cluster-scoped resources
+
+**Source repos:** Can reference their own GitHub repos (for tenant app code)
+
+== IRSA for ArgoCD
+
+=== ServiceAccount & Role
+
+**ServiceAccount:** `argocd-application-controller` (in `argocd` namespace)
+
+**IRSA role:** `platform-argocd-cluster-manager` (created by `iam-management` module)
+
+**Annotation:**
+
+[source,yaml]
+----
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/platform-argocd-cluster-manager
+----
+
+=== IAM Policy
+
+ArgoCD needs minimal AWS permissions (primarily for Argo server kubeconfig generation):
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+----
+
+Most ArgoCD operations are Kubernetes-scoped (RBAC, not IAM).
+
+== Adding a New System Application
+
+=== Step 1 — Create Application Chart
+
+[source,bash]
+----
+mkdir -p src/applications/new-app/templates
+touch src/applications/new-app/Chart.yaml
+touch src/applications/new-app/values.yaml
+----
+
+=== Step 2 — Create AoA Template
+
+[source,yaml]
+----
+# src/app-of-apps/templates/new-app.yaml
+{{- if .Values.spec.gitops.applications.newApp.isEnabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: new-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform-system
+  destination:
+    server: {{ .Values.spec.destination.server }}
+    namespace: {{ .Values.spec.gitops.applications.newApp.namespace | default "kube-system" }}
+  source:
+    repoURL: {{ .Values.spec.gitops.applications.newApp.repoURL | default .Values.spec.default.repoURL }}
+    path: {{ .Values.spec.gitops.applications.newApp.appPath }}
+    targetRevision: {{ .Values.spec.gitops.applications.newApp.targetRevision | default .Values.spec.source.targetRevision }}
+    helm:
+      valueFiles:
+        {{- range $val := .Values.spec.default.helm.valueFiles }}
+          - {{ $val }}
+        {{- end }}
+
+  {{- if .Values.spec.gitops.applications.newApp.isEnabledAutoSync | default false }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  {{- end }}
+{{- end }}
+----
+
+=== Step 3 — Add to App-of-Apps values
+
+[source,yaml]
+----
+# src/app-of-apps/values.yaml
+spec:
+  gitops:
+    applications:
+      newApp:
+        appPath: src/applications/new-app
+        namespace: kube-system
+        isEnabled: false          # Start disabled for testing
+        isEnabledAutoSync: true
+----
+
+=== Step 4 — Test in Staging
+
+1. Set `isEnabled: true` for staging only (in tenant value overrides)
+2. Merge PR with `isEnabled: false` globally
+3. Validate deployment
+4. Set `isEnabled: true` globally in main
+
+== Runtime Values Injection
+
+System apps often need runtime values (cluster name, region, bucket names, IAM role ARNs). These are injected at bootstrap via `argocd app set`:
+
+[source,bash]
+----
+# During cluster bootstrap (in GitHub Actions)
+argocd app set system-app-of-apps \
+  --helm-set spec.gitops.applications.prometheus.helmValues="
+    prometheusSpec:
+      externalLabels:
+        cluster: platform-dev
+        region: eu-west-1
+    thanos:
+      objectStorageConfig:
+        secret:
+          config:
+            bucket: k8s-od-thanos-metrics
+  " \
+  -n argocd
+----
+
+**Important:** These injections are durable — ArgoCD stores them in the Application spec. They survive `selfHeal` because they are stored in the live cluster state, not overwritten by Git.
+
+**Key principle:** Use `argocd app set` on the **parent App-of-Apps**, never on child Applications (selfHeal reverts child-app modifications).
+
+== Sync Policies
+
+=== System Apps
+
+All system apps use:
+
+[source,yaml]
+----
+syncPolicy:
+  automated:
+    prune: true      # Delete resources removed from Git
+    selfHeal: true   # Revert manual kubectl changes
+  syncOptions:
+    - CreateNamespace=true
+    - PruneLast=true  # Delete child resources last (safe ordering)
+  retry:
+    limit: 5
+    backoff:
+      duration: 5s
+      factor: 2
+      maxDuration: 3m
+----
+
+**`automated`:** Changes are deployed automatically when Git changes are detected (no manual sync required).
+
+**`prune: true`:** If a resource is removed from Git, it is deleted from the cluster.
+
+**`selfHeal: true`:** If someone manually edits a resource (kubectl patch, UI edit), ArgoCD reverts it to Git state.
+
+=== Tenant Workloads
+
+Tenant Applications follow the same pattern (auto-sync, prune, selfHeal).
+
+**Exception:** If a tenant wants to prevent accidental deletions, they can set `syncPolicy: {}` (manual sync only):
+
+[source,yaml]
+----
+syncPolicy: {}  # Requires manual argocd app sync before changes
+----
+
+== Troubleshooting
+
+=== Application Stuck in `Progressing`
+
+[source,bash]
+----
+# Get detailed status
+argocd app get system-app-of-apps
+# Check .status.conditions for the error
+
+# View logs of child apps
+argocd app get prometheus --refresh
+kubectl describe app prometheus -n argocd
+
+# Manual sync (in case auto-sync is disabled)
+argocd app sync prometheus
+----
+
+**Common causes:**
+- Helm chart validation error (syntax, missing values)
+- Namespace not created yet (use `CreateNamespace=true`)
+- Resource validation failure (CRD not installed)
+- Image pull error (ECR repo missing, image tag wrong)
+
+=== Manual Change Reverted by selfHeal
+
+If you made a manual change and ArgoCD reverted it, this is expected (`selfHeal: true`):
+
+**Solution:** Make the change in Git, then either:
+1. Wait for ArgoCD to sync (default: 3m) or
+2. Manually trigger sync: `argocd app sync <app-name>`
+
+=== App Created but Not Syncing
+
+[source,bash]
+----
+# Check if app exists
+kubectl get app <app-name> -n argocd
+
+# Check sync status
+kubectl describe app <app-name> -n argocd | grep -A5 "Sync"
+
+# Check resource health
+argocd app get <app-name> --health
+----
+
+**Causes:**
+- `syncPolicy` has `automated: {}` disabled (manual sync required)
+- ResourceQuota prevents resource creation
+- RBAC prevents the app's service account from creating resources
+- Image pull secret is missing
+
+== RBAC for ArgoCD UI Access
+
+ArgoCD users authenticate via OIDC (same as cluster). Authorization is Kubernetes RBAC:
+
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-user
+rules:
+  - apiGroups: ['argoproj.io']
+    resources: ['applications']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['argoproj.io']
+    resources: ['appprojects']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-users
+roleRef:
+  kind: ClusterRole
+  name: argocd-user
+subjects:
+  - kind: Group
+    name: 'argocd-users'      # Google group from OIDC
+----
+
+**Platform team:** Cluster admin (full app management)
+**Tenant users:** Read-only access (view their namespace's apps)
+
+== Performance & Scaling
+
+=== Adjusting Sync Intervals
+
+By default, ArgoCD polls Git every 3 minutes. To reduce latency (at the cost of more API calls):
+
+[source,yaml]
+----
+# In Application spec
+spec:
+  syncPolicy:
+    syncOptions:
+      - RespectIgnoreDifferences=true
+    automated:
+      syncInterval: 1m  # Check every 1m instead of 3m
+----
+
+=== Webhook Triggering (Instant Sync)
+
+For real-time deployments, configure a Git webhook:
+
+[source,bash]
+----
+# In GitHub repo: Settings → Webhooks → Add webhook
+# Payload URL: https://<argocd-server>/api/webhook
+# Select: push events
+----
+
+When code is pushed, GitHub sends a webhook to ArgoCD; apps sync immediately (no 3m polling delay).
+
+=== Large Application Sets
+
+If you have many tenants (hundreds), ApplicationSet generation can be slow. Optimize:
+
+1. **Use directory pattern matching** (already done: `tenants/*`)
+2. **Increase ApplicationSet polling interval** (trades latency for reduced CPU)
+3. **Use matrix generators** to parallelize discovery
