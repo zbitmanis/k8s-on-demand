@@ -1,0 +1,710 @@
+= Monitoring — Prometheus & Thanos Operator Guide
+:toc: left
+:toclevels: 3
+:icons: font
+:source-highlighter: rouge
+
+== Overview
+
+This document is the operator reference for monitoring. For the concise rule set used by Claude Code, see link:monitoring.md[monitoring.md].
+
+The platform uses a **single Prometheus instance** scraping all tenant namespaces, with **Thanos** components for long-term storage and querying. Metrics are labeled with `namespace` for per-tenant isolation.
+
+== Architecture Diagram
+
+[plantuml]
+----
+@startuml
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam componentBorderColor #555555
+
+rectangle "Shared EKS Cluster" as cluster {
+  component "Prometheus\n(single instance)" as prom #LightBlue
+  component "Thanos Sidecar" as sidecar
+  prom --> sidecar : TSDB blocks\nevery 2h
+}
+
+database "S3 Metrics Bucket\nk8s-od-thanos-metrics" as s3 #LightYellow
+
+sidecar --> s3 : upload blocks
+
+rectangle "Management Cluster" as mgmt {
+  component "Thanos Store Gateway" as store
+  component "Thanos Compactor" as compact
+  component "Thanos Query" as query
+  component "Thanos Query Frontend\n(Redis cache)" as qfe
+  component "Thanos Ruler" as ruler
+  component "Grafana" as grafana
+  component "Alertmanager" as alertmgr
+
+  store --> query : gRPC
+  sidecar --> query : gRPC (live data)
+  query --> qfe
+  qfe --> grafana
+  ruler --> alertmgr : alerts
+  compact --> s3 : compact + downsample
+}
+
+s3 --> store : read historical blocks
+
+alertmgr --> [PagerDuty\nSlack\nTenant Webhooks] : route alerts
+@enduml
+----
+
+== Prometheus Deployment
+
+=== Configuration
+
+**Chart:** `prometheus-community/kube-prometheus-stack`
+
+**Deployment location:** Shared cluster, `monitoring` namespace
+
+**Helm values** (`src/applications/prometheus/values.yaml`):
+
+[source,yaml]
+----
+prometheus:
+  prometheusSpec:
+    # Local retention is short — Thanos handles long-term
+    retention: 2h
+    retentionSize: 10GB
+
+    # Schedule on system nodes (system node group has taint)
+    nodeSelector:
+      node-role: system
+    tolerations:
+      - key: node-role
+        value: system
+        effect: NoSchedule
+
+    # External labels identify this cluster
+    externalLabels:
+      cluster: "platform-dev"
+      environment: "development"
+
+    # Scrape ALL tenant namespaces automatically
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+
+    # Thanos sidecar config (uploads to S3)
+    thanos:
+      image:
+        tag: v0.34.0
+      objectStorageConfig:
+        secret:
+          type: S3
+          config:
+            bucket: k8s-od-thanos-metrics
+            endpoint: s3.amazonaws.com
+            region: eu-west-1
+----
+
+=== Service Account & IRSA
+
+**ServiceAccount:** `prometheus-kube-prometheus-prometheus` (in `monitoring` namespace)
+
+**IRSA role:** `<cluster>-thanos-sidecar`
+
+**Annotation:**
+
+[source,yaml]
+----
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<cluster>-thanos-sidecar
+----
+
+**IAM policy scoping:**
+[source,json]
+----
+{
+  "Effect": "Allow",
+  "Action": [
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:DeleteObject",
+    "s3:ListBucket",
+    "s3:GetBucketLocation"
+  ],
+  "Resource": [
+    "arn:aws:s3:::k8s-od-thanos-metrics",
+    "arn:aws:s3:::k8s-od-thanos-metrics/*"
+  ]
+}
+----
+
+=== Scrape Configuration
+
+**Dynamic discovery:**
+
+[source,yaml]
+----
+kubernetes_sd_configs:
+  - role: pod
+
+relabel_configs:
+  # Extract the namespace label from pod metadata
+  - source_labels: [__meta_kubernetes_namespace]
+    target_label: namespace
+    action: replace
+
+  # Extract pod name
+  - source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod
+    action: replace
+
+  # Extract pod labels
+  - source_labels: [__meta_kubernetes_pod_labels_app]
+    target_label: app
+    action: replace
+----
+
+Every metric automatically gets `namespace=<pod-namespace>` label, enabling per-tenant filtering.
+
+=== Metric Example
+
+[source]
+----
+http_requests_total{namespace="acme-corp", pod="api-server-1", app="api", instance="10.0.1.5:8080"} 1200
+http_requests_total{namespace="globex", pod="api-server-2", app="api", instance="10.0.1.6:8080"} 800
+----
+
+Grafana queries use `{namespace="acme-corp"}` to isolate views per tenant.
+
+== Thanos Components
+
+=== Thanos Sidecar (in Prometheus Pod)
+
+Runs as a sidecar container in the Prometheus pod.
+
+**Responsibility:** Watch the TSDB `/prometheus/wal` directory, upload completed 2-hour blocks to S3.
+
+**Upload path structure:**
+[source]
+----
+s3://k8s-od-thanos-metrics/
+├── kube-system/                           # Kubernetes namespace
+│   └── 01ARZ3NDEKTSV4RRFFQ69G5FAV/ (ULID block ID)
+│       ├── chunks/
+│       ├── index
+│       └── meta.json
+├── acme-corp/                             # Tenant namespace
+│   └── 01ARZ3NDEKTSV4RRFFQ69G5FAW/
+│       └── ...
+└── globex/                                # Tenant namespace
+    └── ...
+----
+
+**Block uploads:** Every 2 hours (Prometheus TSDB block rotation)
+
+**S3 bucket:** `k8s-od-thanos-metrics` (created by bootstrap Terraform, survives cluster destroy)
+
+=== Thanos Query
+
+Central query interface; federates across:
+- **Live data:** Prometheus sidecar (gRPC) → current 2-hour metrics
+- **Historical:** Store Gateway (gRPC) → S3 blocks
+
+**Service:** `thanos-query:9090`
+
+**Example query (cross-tenant):**
+[source]
+----
+sum(rate(http_requests_total[5m])) by (namespace)
+----
+
+Result shows top-level request rate by tenant namespace.
+
+=== Thanos Store Gateway
+
+Reads historical blocks from S3 and serves them over gRPC to Thanos Query.
+
+**Deployment:** Management cluster, `monitoring` namespace
+
+**ServiceAccount:** `thanos-sidecar-thanos` (from thanos-community/thanos chart)
+
+**IRSA role:** `<cluster>-thanos-sidecar` (shared with Prometheus sidecar; same S3 access)
+
+**Index caching:** In-memory caching of block indices to speed up queries (no cache persistence)
+
+=== Thanos Compactor
+
+Runs as a **singleton** (only one instance per S3 bucket).
+
+**Responsibilities:**
+1. Compact small blocks into larger ones (improves query speed)
+2. Downsample high-resolution data (reduce storage)
+3. Delete expired blocks
+
+**Downsampling schedule:**
+
+| Retention Tier | From | To | Duration |
+|---|---|---|---|
+| **Raw** | Upload | 40 days | 90 days (then deleted) |
+| **5m downsampling** | 40 days | 10 months | 1 year (then deleted) |
+| **1h downsampling** | 10 months | Indefinite | Indefinite |
+
+**Deployment:** Management cluster, `monitoring` namespace (singleton, no HA)
+
+=== Thanos Ruler
+
+Evaluates alerting and recording rules across the full metric set (all tenants).
+
+**Responsibilities:**
+1. Execute alerting rules (every 30s by default)
+2. Fire alerts to Alertmanager
+3. Execute recording rules (for pre-aggregated metrics)
+
+**Rules source:** ConfigMap or git-based provisioning
+
+**Recording rules:** Pre-compute expensive aggregations (e.g., per-tenant request rates)
+
+**Alerting rules:** Cross-tenant and per-namespace rules (see "Alerting" section)
+
+=== Thanos Query Frontend
+
+Caching layer in front of Thanos Query.
+
+**Cache backend:** Redis or Memcached (configured in values)
+
+**Cache key:** Includes query + tenant filter to prevent cross-tenant data leakage
+
+**Purpose:** Reduce query latency for frequently accessed aggregations
+
+== Grafana
+
+=== Deployment
+
+**Chart:** Grafana (official)
+
+**Location:** Management cluster, `monitoring` namespace
+
+**Datasource:** Thanos Query (`http://thanos-query:9090`)
+
+**Authentication:** OIDC (same provider as ArgoCD)
+
+**Authorization:** All users can read; admin group can edit/create dashboards
+
+=== Built-in Dashboards
+
+| Dashboard | Purpose | Scope |
+|---|---|---|
+| `kubernetes-cluster-monitoring` | Node CPU/memory/disk | Cluster-wide |
+| `kubernetes-workloads` | Pod/deployment health | Namespace-filtered |
+| `prometheus` | Prometheus health | Cluster-wide |
+| `argo-workflows` | Workflow success/failure rates | Cluster-wide |
+| `thanos` | Thanos component health | Cluster-wide |
+
+=== Per-Tenant Dashboard Template
+
+**Key variable:** `namespace` (dropdown populated from metric labels)
+
+[source,json]
+----
+{
+  "dashboard": {
+    "title": "Tenant Detail",
+    "templating": {
+      "list": [
+        {
+          "name": "namespace",
+          "type": "query",
+          "datasource": "Thanos",
+          "query": "label_values(container_cpu_usage_seconds_total, namespace)"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "title": "CPU Usage",
+        "targets": [
+          {
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\"}[5m])) by (pod)"
+          }
+        ]
+      },
+      {
+        "title": "Memory Usage",
+        "targets": [
+          {
+            "expr": "sum(container_memory_usage_bytes{namespace=\"$namespace\"}) by (pod)"
+          }
+        ]
+      }
+    ]
+  }
+}
+----
+
+**Usage:** Select tenant from `namespace` dropdown; all panels filter to that tenant.
+
+== Tenant Metrics Isolation
+
+Three-layer isolation model:
+
+=== Layer 1 — Scrape-Time Labels
+
+Prometheus `relabel_configs` adds `namespace` label during metric scrape:
+
+[source,yaml]
+----
+relabel_configs:
+  - source_labels: [__meta_kubernetes_namespace]
+    target_label: namespace
+    action: replace
+----
+
+Every metric includes `namespace=<value>` label from the start.
+
+=== Layer 2 — Query-Time Filtering
+
+All queries (Grafana, alerts, recording rules) explicitly filter by namespace:
+
+[source]
+----
+# Query a single tenant
+{namespace="acme-corp"}
+
+# Query all metrics EXCEPT a tenant (for platform dashboards)
+{namespace!="acme-corp"}
+
+# Cross-tenant aggregation (careful!)
+sum(rate(http_requests_total[5m])) by (namespace)
+----
+
+**Grafana dashboards:** Use variables to enforce filtering (`$namespace` variable)
+
+=== Layer 3 — S3 Block Organization
+
+Blocks are stored under namespace prefixes in S3. This provides:
+- Logical segregation (blocks for one tenant are physically grouped)
+- Cost allocation (easy to see per-tenant storage costs)
+- Compliance (can selectively delete per-tenant blocks on offboarding)
+
+== Alerting
+
+=== Alert Pipeline
+
+[source]
+----
+Prometheus     →  AlertManager  →  Slack / PagerDuty / Email
+Thanos Ruler   →  AlertManager  →
+Tenant Rules   →  AlertManager  →
+----
+
+=== Platform Alerting Rules
+
+Defined in `src/terraform/modules/monitoring/prometheus-rules.yaml`.
+
+[cols="2,3,2"]
+|===
+| Alert | Condition | Severity
+
+| `ClusterDown`
+| Prometheus scrape targets down > 5m
+| critical
+
+| `NodeNotReady`
+| Kubernetes node NotReady > 5m
+| critical
+
+| `HighMemoryUsage`
+| Node memory usage > 85% for 15m
+| warning
+
+| `PodCrashLooping`
+| Pod restarts > 5 in 10m
+| warning
+
+| `ArgoCDAppDegraded`
+| ArgoCD app health=Degraded > 5m
+| warning
+
+| `ThanosCompactorHalted`
+| Thanos compactor not running
+| critical
+
+| `PrometheusTargetDown`
+| ServiceMonitor target down > 5m
+| warning
+
+| `TenantNamespaceQuotaExceeded`
+| Namespace CPU/memory requests > 90% quota
+| warning
+
+| `MetricIngestionDelay`
+| Thanos block upload delay > 3h
+| warning
+|===
+
+=== Per-Tenant Alerting Rules
+
+Tenants define `PrometheusRule` resources in their namespace:
+
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: acme-app-alerts
+  namespace: acme-corp
+spec:
+  groups:
+  - name: acme.rules
+    interval: 30s
+    rules:
+    - alert: HighErrorRate
+      expr: |
+        (sum(rate(http_requests_total{namespace="acme-corp", status=~"5.."}[5m])) /
+         sum(rate(http_requests_total{namespace="acme-corp"}[5m]))) > 0.05
+      for: 5m
+      annotations:
+        summary: "Acme API error rate > 5%"
+        runbook: "https://..."
+    - alert: LowAvailability
+      expr: |
+        (count(up{namespace="acme-corp", job="api"}) / 3) < 0.66
+      for: 2m
+      annotations:
+        summary: "Less than 2/3 API replicas up"
+----
+
+**Rules are automatically discovered:** Prometheus watches all namespaces for `PrometheusRule` resources.
+
+**Namespace scoping:** Tenant rules must explicitly filter by `namespace="<tenant-id>"` (no cross-tenant visibility).
+
+=== Alert Routing (AlertManager)
+
+AlertManager routes based on labels:
+
+[source,yaml]
+----
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ['alertname', 'namespace']
+
+  routes:
+  - match:
+      severity: critical
+    receiver: pagerduty
+    group_wait: 10s
+    group_interval: 10s
+
+  - match:
+      severity: warning
+    receiver: slack-platform-alerts
+    group_wait: 30s
+    group_interval: 5m
+
+  - match:
+      namespace: acme-corp
+    receiver: slack-acme-alerts
+    continue: true
+
+receivers:
+- name: default
+  slack_configs:
+  - api_url: <webhook-url>
+    channel: '#platform-alerts'
+
+- name: pagerduty
+  pagerduty_configs:
+  - service_key: <service-key>
+
+- name: slack-acme-alerts
+  slack_configs:
+  - api_url: <acme-webhook-url>
+    channel: '#acme-alerts'
+----
+
+== Adding a Tenant to Monitoring
+
+**No action required.** Monitoring is automatic:
+
+1. **Namespace creation:** Tenant namespace is created during onboarding
+2. **Metric discovery:** Prometheus already scrapes all namespaces (no config change)
+3. **Sidecar shipping:** Thanos sidecar automatically ships all metrics to S3 (blocks include namespace-tagged metrics)
+4. **Query availability:** Metrics are immediately queryable in Thanos Query under `{namespace="<tenant-id>"}`
+
+**Optional:**
+- Create Grafana folder for tenant (UI organization)
+- Add tenant-specific dashboard with pre-configured `namespace` variable
+- Create AlertManager routing rule if tenant has a custom Slack channel
+
+== Removing a Tenant's Metrics
+
+When a tenant is offboarded:
+
+1. **Namespace deleted:** Kubernetes namespace is deleted
+2. **No new metrics:** Prometheus stops scraping the namespace
+3. **Historical data archival:** S3 blocks are *not* automatically deleted; move to cold storage:
+   [source,bash]
+   ----
+   aws s3 mv \
+     s3://k8s-od-thanos-metrics/<tenant-id>/ \
+     s3://k8s-od-thanos-metrics/cold/<tenant-id>/ \
+     --recursive
+   ----
+4. **Retention:** Keep cold storage for audit/compliance period (default: 1 year), then delete
+
+== Observability & Health Checks
+
+=== Prometheus Health
+
+Check if Prometheus is scraping correctly:
+
+[source,bash]
+----
+# Port-forward to Prometheus
+kubectl port-forward -n monitoring svc/prometheus 9090:9090
+
+# Visit http://localhost:9090/targets
+# All targets should be green (Up)
+----
+
+=== Thanos Query Health
+
+Check if Thanos can reach store and sidecar:
+
+[source,bash]
+----
+# Port-forward to Thanos Query
+kubectl port-forward -n monitoring svc/thanos-query 9090:9090
+
+# Visit http://localhost:9090
+# Execute: {__name__=~".+"}
+# Should return metrics from all namespaces
+----
+
+=== Block Upload Lag
+
+Check if Thanos sidecar is uploading blocks on schedule:
+
+[source,bash]
+----
+# Query
+max(time() - thanos_sidecar_last_upload_success_timestamp_seconds) by (prometheus)
+
+# Should be < 2h (blocks upload every 2h)
+----
+
+If > 3h:
+- Check sidecar pod logs: `kubectl logs -n monitoring -l app=prometheus -c thanos-sidecar`
+- Verify IRSA role has S3 permissions
+- Check S3 bucket for access errors
+
+== Troubleshooting
+
+=== Prometheus Not Scraping Tenant Namespace
+
+**Symptom:** No metrics in Grafana for `namespace="my-tenant"`
+
+**Diagnosis:**
+[source,bash]
+----
+# Check if ServiceMonitor is discovered
+kubectl get servicemonitor -A | grep my-tenant
+
+# Check Prometheus targets
+kubectl port-forward -n monitoring svc/prometheus 9090:9090
+# Visit http://localhost:9090/targets and search for namespace
+----
+
+**Solution:**
+- Ensure tenant has a `ServiceMonitor` or `PodMonitor` resource
+- Verify `spec.selector` matches the app labels
+- Verify the ServiceMonitor is in the tenant namespace
+- Prometheus scrapes all namespaces (selector is empty in values)
+
+=== Metrics Lag in Grafana
+
+**Symptom:** Grafana shows old data; recent queries are empty
+
+**Diagnosis:**
+[source,bash]
+----
+# Query Prometheus directly (live data)
+curl 'http://prometheus:9090/api/v1/query?query={namespace="my-tenant"}'
+
+# If no results, check scrape targets
+
+# Query Thanos (includes historical)
+curl 'http://thanos-query:9090/api/v1/query?query={namespace="my-tenant"}'
+
+# If no results, sidecar may not have uploaded blocks yet
+----
+
+**Solution:**
+- Wait for Thanos sidecar to upload blocks (every 2h)
+- Force immediate block rotation: `curl -X POST http://prometheus:9090/-/reload` (triggers a new TSDB block)
+- Verify store gateway is running and can reach S3
+
+=== S3 Access Errors
+
+**Symptom:** Sidecar/store logs show S3 errors (NoSuchBucket, AccessDenied, etc.)
+
+**Diagnosis:**
+[source,bash]
+----
+# Check sidecar logs
+kubectl logs -n monitoring -l app=prometheus -c thanos-sidecar | grep -i error
+
+# Verify IRSA role can access S3
+kubectl get sa -n monitoring prometheus-kube-prometheus-prometheus -o yaml | grep role-arn
+----
+
+**Solution:**
+- Verify bucket exists: `aws s3 ls s3://k8s-od-thanos-metrics/`
+- Verify IRSA role has S3 policy (see "IAM policy scoping" section)
+- Verify role ARN annotation on ServiceAccount is correct
+- Check CloudTrail for S3 API calls and errors
+
+== Performance Tuning
+
+=== Reducing Query Latency
+
+1. **Use recording rules** for expensive aggregations:
+   [source,yaml]
+   ----
+   - record: tenant:http_requests_rate5m:sum
+     expr: sum(rate(http_requests_total[5m])) by (namespace)
+   ----
+   Then query `tenant:http_requests_rate5m:sum{namespace="acme-corp"}`
+
+2. **Increase query frontend cache TTL:**
+   [source,yaml]
+   ----
+   queryFrontend:
+     config:
+       cache:
+         default_validity: 5m  # Longer for stable metrics
+   ----
+
+3. **Add index cache to store gateway** (already enabled by default)
+
+=== Reducing Storage Costs
+
+1. **Increase downsampling interval** (trade accuracy for space):
+   [source,yaml]
+   ----
+   compactor:
+     downsample:
+       enable: true
+       concurrency: 4
+   ----
+
+2. **Delete old data sooner:**
+   [source,yaml]
+   ----
+   compactor:
+     retention:
+       raw: 30d      # Was 90d
+   ----
+
+3. **Archive cold tenant data to Glacier** (manual S3 lifecycle policy)

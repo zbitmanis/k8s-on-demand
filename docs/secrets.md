@@ -2,244 +2,56 @@
 
 ## Principles
 
-* **No secrets in Git** — ever. Not encrypted, not base64-encoded, not in comments.
-* **Single source of truth** — AWS Secrets Manager is the canonical secrets store.
-* **IRSA-scoped access** — each workload can only read secrets in its own tenant prefix.
-* **Automatic rotation** — secrets are rotated on a schedule; pods pick up changes without restarts (via ESO sync).
-* **Audit trail** — all secret access is logged to CloudWatch via AWS CloudTrail.
+* **No secrets in Git** — ever
+* **AWS Secrets Manager** — single source of truth
+* **Path-based scoping** — `/<tenant-id>/*` enforced via IRSA policies
+* **ESO for delivery** — ExternalSecret → Kubernetes Secret
+* **Automatic rotation** — monthly schedule; ESO syncs on refresh (default 1h)
 
-## Secret Storage — AWS Secrets Manager
+## Secret Paths
 
-All secrets are stored in AWS Secrets Manager using a path convention:
+| Scope | Path | Role Access |
+|---|---|---|
+| **Platform** | `/platform/` | `platform-argo-workflow-runner` |
+| **Tenant** | `/<tenant-id>/` | `<tenant>-external-secrets` |
 
-```
-/<tenant-id>/<component>/<secret-name>
-
-Examples:
-  /acme-corp/database/postgres-password
-  /acme-corp/app/api-key
-  /acme-corp/registry/pull-secret
-  /platform/github-token
-  /platform/argocd-token
-  /platform/slack-webhook
-```
-
-Platform-level secrets (used by management cluster components) live under `/platform/`.
-Tenant secrets live under `/<tenant-id>/`.
-
-IRSA policies enforce that each tenant role can only access its own prefix.
-See [iam-conventions.md](iam-conventions.md) for the IAM policy details.
-
-```plantuml
-@startuml
-skinparam backgroundColor #FAFAFA
-skinparam defaultFontName Arial
-
-rectangle "AWS Secrets Manager" {
-  rectangle "Platform Secrets (/platform/*)" {
-    component "github-token"
-    component "argocd-token"
-    component "slack-webhook"
-  }
-  rectangle "Tenant Secrets (/<tenant-id>/*)" {
-    component "database/postgres-password"
-    component "app/api-key"
-    component "registry/pull-secret"
-  }
-}
-
-component "platform-argo-workflow-runner\nIAM Role" as platform_role
-component "tenant-<id>-external-secrets\nIAM Role" as tenant_role
-
-platform_role -.->|can access| "Platform Secrets (/platform/*)"
-tenant_role -.->|can access| "Tenant Secrets (/<tenant-id>/*)"
-
-@enduml
-```
-
-## Delivery to Pods — External Secrets Operator
-
-External Secrets Operator (ESO) runs as a system app in each tenant cluster.
-It watches `ExternalSecret` CRDs and syncs secret values from AWS Secrets Manager
-into native Kubernetes Secrets.
-
-### ExternalSecret Example
-
-```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: database-credentials
-  namespace: acme-corp-prod
-spec:
-  refreshInterval: 1h               # Re-sync every hour
-  secretStoreRef:
-    name: aws-secretsmanager
-    kind: ClusterSecretStore
-  target:
-    name: database-credentials       # Kubernetes Secret name
-    creationPolicy: Owner
-  data:
-    - secretKey: password            # Key in the K8s Secret
-      remoteRef:
-        key: /acme-corp/database/postgres-password
-        version: AWSCURRENT          # Always pull latest version
-```
-
-```plantuml
-@startuml
-skinparam backgroundColor #FAFAFA
-skinparam defaultFontName Arial
-
-participant "ESO Controller" as eso
-participant "AWS Secrets Manager" as secretsmgr
-participant "Kubernetes Secret" as k8s_secret
-participant "Pod" as pod
-
-loop refresh cycle (e.g. 1h)
-  eso -> eso: Watch ExternalSecret CR\nin tenant namespace
-  eso -> secretsmgr: Authenticate via ClusterSecretStore\n(IRSA with tenant role)
-  secretsmgr -> secretsmgr: Verify pod identity\nmatches role's namespace:sa condition
-  eso <- secretsmgr: Fetch secret value\nfrom /tenant-id/component/name
-  eso -> k8s_secret: Create/update Kubernetes Secret\nin tenant namespace
-end
-
-pod -> k8s_secret: Mount Secret as env var\nor volume
-k8s_secret -> pod: Provide secret data
-
-@enduml
-```
-
-### ClusterSecretStore
-
-One `ClusterSecretStore` is configured per tenant cluster, using the tenant's IRSA role:
-
-```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ClusterSecretStore
-metadata:
-  name: aws-secretsmanager
-spec:
-  provider:
-    aws:
-      service: SecretsManager
-      region: eu-west-1
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: external-secrets
-            namespace: external-secrets
-```
-
-The `external-secrets` service account is annotated with the tenant IRSA role ARN:
-
-```yaml
-metadata:
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/acme-corp-external-secrets
-```
-
-## Secret Lifecycle
-
-### Creating a New Secret
-
-1. Store the secret in AWS Secrets Manager via AWS Console, CLI, or Terraform:
-
-   ```bash
-   aws secretsmanager create-secret \
-     --name /acme-corp/app/api-key \
-     --secret-string '{"api_key":"<value>"}' \
-     --region eu-west-1
-   ```
-2. Create an `ExternalSecret` manifest in the tenant's Kubernetes namespace:
-
-   ```yaml
-   # tenants/acme-corp/argocd/secrets.yaml
-   apiVersion: external-secrets.io/v1beta1
-   kind: ExternalSecret
-   ...
-   ```
-3. ArgoCD syncs the manifest to the cluster.
-4. ESO reads the secret from Secrets Manager and creates the Kubernetes Secret.
-5. Pods reference the Kubernetes Secret normally via `env.valueFrom.secretKeyRef`.
-
-### Rotating a Secret
-
-1. Rotate the value in AWS Secrets Manager (manually or via automatic rotation).
-2. ESO picks up the new `AWSCURRENT` version on the next refresh cycle (default: 1h).
-3. The Kubernetes Secret is updated.
-4. If pods need to pick up the new secret without restart, use a secret volume mount (filesystem updates propagate without pod restart). For environment variables, a pod restart is required — use a tool like Reloader or rely on the Argo Workflow `rotate-secrets` pipeline to perform a rolling restart.
-
-### Automatic Rotation
-
-For database passwords and API keys that support rotation:
-
-* AWS Secrets Manager rotation lambda is configured for the secret
-* Rotation schedule: every 30 days (configurable per secret)
-* The `rotate-secrets` Argo Workflow runs monthly to verify rotation succeeded and triggers pod rolling restarts where env var injection is used
-
-## Secrets in GitHub Actions
-
-GitHub Actions needs secrets to:
-
-* Assume the Terraform execution role (handled via OIDC — no stored secret)
-* Dispatch Argo Workflow `workflow_dispatch` events (requires a GitHub PAT)
-* Post Slack notifications
-
-These are stored as GitHub Actions organization-level secrets and injected as environment
-variables in workflow steps. They are not stored in AWS Secrets Manager
-(GHA cannot reach Secrets Manager before AWS credentials are established).
-
-|     |     |     |
-| --- | --- | --- |
-| Secret | Storage | Rotation |
-| `TERRAFORM_ROLE_ARN` | GHA org secret | On IAM role change |
-| `TERRAFORM_STATE_BUCKET` | GHA org secret | Static |
-| `GH_TOKEN` (PAT for Argo → GHA) | AWS Secrets Manager `/platform/github-token` | Every 90 days |
-| `ARGOCD_TOKEN` | AWS Secrets Manager `/platform/argocd-token` | Every 90 days |
-| `SLACK_WEBHOOK_URL` | AWS Secrets Manager `/platform/slack-webhook` | On rotation |
-
-## Platform Internal Secrets
-
-Secrets used by management cluster components (Argo Workflows, Argo Events, scripts):
+### Platform Secrets
 
 ```
-/platform/github-token          → GH PAT for workflow dispatch
-/platform/argocd-token          → ArgoCD service account token
-/platform/slack-webhook         → Slack incoming webhook URL
-/platform/pagerduty-key         → PagerDuty integration key
+/platform/webhook-hmac-secret     → HMAC secret for Argo Events webhooks (all 4 endpoints)
+/platform/github-token             → GitHub PAT with workflow:write scope
+/platform/slack-webhook            → Slack Incoming Webhook URL
 ```
 
-These are injected into management cluster pods via ESO using a dedicated `ClusterSecretStore`
-backed by the `platform-argo-workflow-runner` IRSA role (which has `/platform/*` read access).
+Format: `/platform/<secret-type>` as JSON with a `"value"` key (or `"token"` for github-token, `"url"` for slack-webhook).
 
-## Secrets That Must Never Exist in This Repo
+## Delivery — External Secrets Operator
 
-* AWS access keys or secret keys
-* Kubernetes service account tokens
-* TLS private keys
-* Database passwords
-* API tokens of any kind
-* Base64-encoded secrets (these are not encrypted)
-* `.env` files with real values
+ESO watches `ExternalSecret` CRDs and syncs from AWS Secrets Manager into native Kubernetes Secrets.
 
-Pre-commit hooks are configured to detect and block common secret patterns using `detect-secrets`.
-CI also runs `git-secrets` scan on every PR.
+**ClusterSecretStore pattern:**
+- One per tenant cluster
+- Uses tenant IRSA role (`<tenant>-external-secrets`)
+- Syncs to tenant namespace Kubernetes Secrets
 
-## Emergency Access — Break-glass
+**Pod injection:**
+- `env.valueFrom.secretKeyRef` for environment variables
+- `volumeMounts` for file-based access
+- Volume mounts update without pod restart; env vars require restart
 
-If ESO is unavailable or a secret is urgently needed for debugging:
+## Key Rules
 
-1. Authenticate to AWS Console using the `platform-break-glass` role (requires MFA)
-2. Navigate to AWS Secrets Manager → retrieve the secret value
-3. Log the access reason in the incident log
-4. Do NOT copy secrets to local files — access them only in-memory
+1. **Never commit secrets** — `.gitignore` and pre-commit hooks enforce this
+2. **One ClusterSecretStore per tenant** — scoped to `/<tenant-id>/*` path
+3. **ESO refresh interval** — default 1h; force sync via annotation if needed
+4. **Rotation workflow** — `rotate-secrets` Argo Workflow runs monthly; triggers pod rolling restart for env var injection
+5. **GitHub Actions secrets** — OIDC for AWS (no static credentials); GitHub PAT stored in AWS Secrets Manager, injected to GHA via organization secrets
 
-Break-glass access is logged to CloudWatch and triggers an alert to `#platform-security`.
+## Emergency Access
 
-## Secret Scanning
+Break-glass role (`platform-break-glass`) with MFA:
+- Read-only access to AWS Secrets Manager
+- All access logged to CloudTrail
+- Alert fires on every use
 
-* `detect-secrets` pre-commit hook blocks commits containing high-entropy strings or known secret patterns
-* GitHub secret scanning is enabled at the organisation level
-* A weekly CI job (`secret-scan.yaml`) runs `truffleHop` across the full git history
-* Any detection triggers immediate rotation of the potentially exposed secret
+*Full operator guide: see [`docs/secrets.adoc`](secrets.adoc)*
