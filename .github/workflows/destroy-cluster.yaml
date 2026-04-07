@@ -204,30 +204,88 @@ jobs:
           echo "Waiting 60s for ALB deprovisioning..."
           sleep 60
 
-      - name: Delete all LoadBalancer services (triggers NLB deprovisioning)
+      - name: Delete all LoadBalancer services (triggers NLB/CLB deprovisioning)
         if: steps.cluster.outputs.name != ''
         run: |
+          # Force-remove the LBC finalizer first — without this, kubectl delete svc
+          # blocks indefinitely waiting for the finalizer to be cleared. The LBC
+          # may be unable to call AWS APIs (IRSA token expired), so it never removes
+          # the finalizer on its own.
           kubectl get svc --all-namespaces \
             -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
           | while read -r ns name; do
               if [[ -n "$ns" && -n "$name" ]]; then
+                echo "  Removing LBC finalizer from $ns/$name"
+                kubectl patch svc "$name" -n "$ns" \
+                  -p '{"metadata":{"finalizers":[]}}' \
+                  --type=merge --ignore-not-found || true
                 echo "  Deleting LoadBalancer svc $ns/$name"
-                kubectl delete svc "$name" -n "$ns" --ignore-not-found || true
+                kubectl delete svc "$name" -n "$ns" \
+                  --wait=false --ignore-not-found || true
               fi
             done
+
+      - name: Wait for AWS load balancers to be deprovisioned
+        if: steps.cluster.outputs.name != ''
+        run: |
+          # Poll AWS directly — the kubernetes objects are gone but the AWS LBs
+          # may still be deleting. VPC destroy will fail if LB ENIs still exist.
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=*${{ steps.cluster.outputs.name }}*" \
+            --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+          if [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]]; then
+            echo "VPC not found — skipping LB drain wait"
+            exit 0
+          fi
+          echo "VPC: $VPC_ID — waiting for all LBs to be gone..."
+          TIMEOUT=300
+          ELAPSED=0
+          while [[ $ELAPSED -lt $TIMEOUT ]]; do
+            LB_COUNT=$(aws elbv2 describe-load-balancers \
+              --query "length(LoadBalancers[?VpcId=='${VPC_ID}'])" \
+              --output text 2>/dev/null || echo "0")
+            CLASSIC_COUNT=$(aws elb describe-load-balancers \
+              --query "length(LoadBalancerDescriptions[?VPCId=='${VPC_ID}'])" \
+              --output text 2>/dev/null || echo "0")
+            TOTAL=$((LB_COUNT + CLASSIC_COUNT))
+            if [[ "$TOTAL" -eq 0 ]]; then
+              echo "All load balancers removed."
+              exit 0
+            fi
+            echo "  ${TOTAL} LB(s) still present (${ELAPSED}s elapsed)..."
+            sleep 15
+            ELAPSED=$((ELAPSED + 15))
+          done
+          echo "⚠️ LB drain timeout after ${TIMEOUT}s — proceeding anyway. Terraform destroy may fail if ENIs remain."
+
+      - name: Scale down monitoring StatefulSets before PVC delete
+        if: steps.cluster.outputs.name != ''
+        run: |
+          # pvc-protection finalizer is held while a pod mounts the PVC.
+          # kubectl delete pvc hangs until all consumers are gone.
+          # Scale down first so kubelet releases the PVCs before we delete them.
+          kubectl scale statefulset --all -n monitoring --replicas=0 \
+            --ignore-not-found || true
+          kubectl scale deployment --all -n monitoring --replicas=0 \
+            --ignore-not-found || true
+          echo "Waiting 30s for monitoring pods to terminate..."
+          kubectl wait pod --all -n monitoring \
+            --for=delete --timeout=60s || true
 
       - name: Delete monitoring PVCs (gp3 reclaimPolicy=Delete, EBS auto-released)
         if: steps.cluster.outputs.name != ''
         run: |
           # Scope: monitoring namespace only. Tenant namespaces use gp3-retain and
           # their EBS volumes intentionally survive cluster destruction.
-          kubectl delete pvc --all -n monitoring --ignore-not-found || true
+          # --wait=false: deletion is accepted immediately; EBS release is async.
+          kubectl delete pvc --all -n monitoring \
+            --wait=false --ignore-not-found || true
 
-      - name: Wait for ENI and EBS detachment
+      - name: Wait for EBS volumes to detach
         if: steps.cluster.outputs.name != ''
         run: |
-          echo "Waiting 90s for AWS ENI and EBS detachment..."
-          sleep 90
+          echo "Waiting 60s for EBS volumes to detach after PVC deletion..."
+          sleep 60
 
   # ── 3. Remove ArgoCD ──────────────────────────────────────────────────────
   # Strips finalizers first (avoids deadlock when controllers are gone),
