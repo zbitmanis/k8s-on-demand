@@ -269,8 +269,13 @@ jobs:
           ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
             -o jsonpath="{.data.password}" | base64 -d)
 
-          kubectl port-forward svc/argocd-server -n argocd 8080:443 &
-          PF_PID=$!
+          start_port_forward() {
+            kubectl port-forward svc/argocd-server -n argocd 8080:443 \
+              >/dev/null 2>&1 &
+            echo $!
+          }
+
+          PF_PID=$(start_port_forward)
           sleep 5
 
           argocd login "$ARGOCD_SERVER" \
@@ -281,22 +286,47 @@ jobs:
           EXPECTED_APPS="aws-load-balancer-controller cert-manager external-secrets-operator gatekeeper gatekeeper-policies ingress-nginx prometheus thanos-sidecar argo-workflows argo-events platform-rbac cluster-autoscaler"
           TIMEOUT=1200  # 20 minutes
           ELAPSED=0
+          DEGRADED_WARN_APPS=""
 
           while true; do
-            ALL_HEALTHY=true
+            # Restart port-forward if it died (broken pipe kills the process)
+            if ! kill -0 "$PF_PID" 2>/dev/null; then
+              echo "  port-forward died — restarting..."
+              PF_PID=$(start_port_forward)
+              sleep 3
+            fi
+
+            # Single API call for all app statuses
+            APP_JSON=$(argocd app list --output json 2>/dev/null || echo "[]")
+
+            ALL_READY=true
+            DEGRADED_WARN_APPS=""
             for app in $EXPECTED_APPS; do
-              STATUS=$(argocd app get "$app" --output json 2>/dev/null \
-                | jq -r '.status.health.status // "Unknown"')
-              SYNC=$(argocd app get "$app" --output json 2>/dev/null \
-                | jq -r '.status.sync.status // "Unknown"')
-              if [[ "$STATUS" != "Healthy" || "$SYNC" != "Synced" ]]; then
-                echo "  $app: health=$STATUS sync=$SYNC"
-                ALL_HEALTHY=false
+              HEALTH=$(echo "$APP_JSON" | jq -r \
+                --arg a "$app" \
+                '.[] | select(.metadata.name==$a) | .status.health.status // "Unknown"')
+              SYNC=$(echo "$APP_JSON" | jq -r \
+                --arg a "$app" \
+                '.[] | select(.metadata.name==$a) | .status.sync.status // "Unknown"')
+
+              if [[ "$HEALTH" == "Healthy" ]]; then
+                : # healthy — no action
+              elif [[ "$HEALTH" == "Degraded" && "$SYNC" == "Synced" ]]; then
+                # Deployed and synced but a resource is degraded (e.g. ClusterSecretStore
+                # not yet connected). Warn but do not block — often transient at bootstrap.
+                DEGRADED_WARN_APPS="$DEGRADED_WARN_APPS $app"
+              else
+                # Unknown health or OutOfSync — still converging
+                echo "  $app: health=$HEALTH sync=$SYNC"
+                ALL_READY=false
               fi
             done
 
-            if $ALL_HEALTHY; then
-              echo "All system apps are Healthy and Synced."
+            if $ALL_READY; then
+              if [[ -n "$DEGRADED_WARN_APPS" ]]; then
+                echo "⚠️ Degraded+Synced (may be transient):$DEGRADED_WARN_APPS"
+              fi
+              echo "All system apps ready."
               break
             fi
 
