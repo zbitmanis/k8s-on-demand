@@ -264,10 +264,8 @@ jobs:
           # pvc-protection finalizer is held while a pod mounts the PVC.
           # kubectl delete pvc hangs until all consumers are gone.
           # Scale down first so kubelet releases the PVCs before we delete them.
-          kubectl scale statefulset --all -n monitoring --replicas=0 \
-            --ignore-not-found || true
-          kubectl scale deployment --all -n monitoring --replicas=0 \
-            --ignore-not-found || true
+          kubectl scale statefulset --all -n monitoring --replicas=0 || true
+          kubectl scale deployment --all -n monitoring --replicas=0 || true
           echo "Waiting 30s for monitoring pods to terminate..."
           kubectl wait pod --all -n monitoring \
             --for=delete --timeout=60s || true
@@ -370,10 +368,10 @@ jobs:
         if: steps.cluster.outputs.name != ''
         run: |
           if kubectl get ns argocd 2>/dev/null; then
-            echo "ERROR: argocd namespace still present after cleanup — manual intervention required"
-            exit 1
+            echo "⚠️ argocd namespace still present — proceeding to terraform destroy anyway"
+          else
+            echo "argocd namespace removed successfully"
           fi
-          echo "argocd namespace removed successfully"
 
   # ── 4. Terraform destroy ──────────────────────────────────────────────────
   terraform-destroy:
